@@ -13,9 +13,6 @@ import Observation
 
 @Observable
 final class ProfileStore {
-  static let gridRows = 3
-  static let gridCols = 5
-
   private(set) var profiles: [ProfileConfig]
   private(set) var activeProfileId: UUID
 

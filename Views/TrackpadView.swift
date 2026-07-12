@@ -27,7 +27,7 @@ struct TrackpadView: View {
             Image(systemName: "hand.point.up.left")
               .font(.system(size: 40))
               .foregroundStyle(themeStore.accentColor)
-            Text("1本指ドラッグ: カーソル移動 / 1本指タップ: 左クリック\n2本指タップ: 右クリック / 2本指ドラッグ: スクロール\n3本指スワイプ: Macのスペース切替")
+            Text("1本指ドラッグ: カーソル移動 / 1本指タップ: 左クリック\n2本指タップ: 右クリック / 2本指ドラッグ: スクロール\n3本指スワイプ: 左右でスペース切替、上下でMission Control等")
               .font(.caption)
               .foregroundStyle(GamingPalette.mutedForeground)
               .multilineTextAlignment(.center)
@@ -54,6 +54,14 @@ struct TrackpadView: View {
             onThreeFingerSwipeRight: {
               // 3本指右スワイプ = 前のスペースへ（Control+左矢印と同等）
               connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "left"]))
+            },
+            onThreeFingerSwipeUp: {
+              // 3本指上スワイプ = Mission Control（Control+上矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "up"]))
+            },
+            onThreeFingerSwipeDown: {
+              // 3本指下スワイプ = Application Exposé（Control+下矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "down"]))
             }
           )
         }

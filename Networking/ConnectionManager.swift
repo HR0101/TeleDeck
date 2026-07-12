@@ -28,6 +28,9 @@ final class ConnectionManager {
   /// Macから最新のプロファイル一覧が届いたときに呼ばれる（Macがプロファイル設定の本体のため）
   var onProfileSync: (([ProfileConfig], UUID) -> Void)?
 
+  /// Macから最新のコピー履歴一覧が届いたときに呼ばれる（新規コピー検知時・取得要求への応答の両方でこの経路を通る）
+  var onClipboardHistory: (([ClipboardHistoryEntry]) -> Void)?
+
   private let bonjourClient: BonjourClient
   private var pendingRequests: [String: (Result<Void, Error>) -> Void] = [:]
   private var pendingTabsCompletion: (([TabInfo], [MacApplicationInfo]) -> Void)?
@@ -103,6 +106,17 @@ final class ConnectionManager {
   /// iPad側での編集内容をMac（プロファイル設定の本体）へ反映依頼する
   func sendProfileUpdate(profiles: [ProfileConfig], activeProfileId: UUID) {
     send(UpdateProfilesMessage(profiles: profiles, activeProfileId: activeProfileId))
+  }
+
+  /// Mac側の現在のコピー履歴一覧を取得する
+  func requestClipboardHistory() {
+    send(GetClipboardHistoryMessage())
+  }
+
+  /// 指定した履歴アイテムをMacのクリップボードにセットし、貼り付けまで実行するよう依頼する
+  func pasteClipboardItem(id: UUID, completion: @escaping (Result<Void, Error>) -> Void = { _ in }) {
+    pendingRequests[id.uuidString] = completion
+    send(PasteClipboardItemMessage(itemId: id))
   }
 
   // MARK: - トラックパッド（高頻度・一方向のためAckを待たない）
@@ -203,6 +217,9 @@ final class ConnectionManager {
         let message = try JSONDecoder().decode(ApplicationsListMessage.self, from: data)
         pendingApplicationsCompletion?(message.applications)
         pendingApplicationsCompletion = nil
+      case "clipboardHistory":
+        let message = try JSONDecoder().decode(ClipboardHistoryMessage.self, from: data)
+        onClipboardHistory?(message.items)
       default:
         break
       }

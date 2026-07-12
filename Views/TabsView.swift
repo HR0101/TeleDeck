@@ -20,6 +20,10 @@ struct TabsView: View {
   @State private var isShowingActivationError = false
   @State private var activationErrorMessage = ""
 
+  private let applicationColumns = [
+    GridItem(.adaptive(minimum: 72, maximum: 88), spacing: 16)
+  ]
+
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
@@ -43,7 +47,7 @@ struct TabsView: View {
 
   private var searchBar: some View {
     HStack {
-      TextField("タブを検索", text: $searchText)
+      TextField("アプリ・タブを検索", text: $searchText)
         .foregroundStyle(GamingPalette.foreground)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -77,9 +81,14 @@ struct TabsView: View {
             .foregroundStyle(GamingPalette.mutedForeground)
             .listRowBackground(GamingPalette.card.opacity(0.55))
         } else {
-          ForEach(filteredApplications) { application in
-            applicationRow(application)
+          LazyVGrid(columns: applicationColumns, spacing: 16) {
+            ForEach(filteredApplications) { application in
+              applicationTile(application)
+            }
           }
+          .padding(.vertical, 8)
+          .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+          .listRowBackground(Color.clear)
         }
       }
 
@@ -135,37 +144,33 @@ struct TabsView: View {
     }
   }
 
-  private func applicationRow(_ application: MacApplicationInfo) -> some View {
+  private func applicationTile(_ application: MacApplicationInfo) -> some View {
     Button {
       activateApplication(application)
     } label: {
-      HStack(spacing: 12) {
-        applicationIcon(application)
-
-        VStack(alignment: .leading, spacing: 3) {
-          Text(application.name)
-            .fontWeight(application.active ? .bold : .regular)
-            .foregroundStyle(application.active ? themeStore.accentColor : GamingPalette.foreground)
-          Text(application.bundleIdentifier)
-            .font(.caption2)
-            .foregroundStyle(GamingPalette.mutedForeground)
-            .lineLimit(1)
-        }
-
-        Spacer()
-
-        if application.active {
-          Text("使用中")
-            .font(.caption)
-            .foregroundStyle(themeStore.accentColor)
-        } else {
-          Image(systemName: "arrow.up.forward.app")
-            .foregroundStyle(GamingPalette.mutedForeground)
-        }
+      applicationIcon(application)
+        .frame(width: 68, height: 68)
+        .background(
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(application.active ? themeStore.accentColor.opacity(0.16) : GamingPalette.card.opacity(0.5))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(
+              application.active ? themeStore.accentColor : GamingPalette.mutedForeground.opacity(0.18),
+              lineWidth: application.active ? 2 : 1
+            )
+        )
+    }
+    .buttonStyle(ApplicationTileButtonStyle())
+    .accessibilityLabel(application.name)
+    .accessibilityValue(application.active ? "Macで使用中" : "")
+    .contextMenu {
+      Text(application.name)
+      Button("Macで開く") {
+        activateApplication(application)
       }
     }
-    .buttonStyle(.plain)
-    .listRowBackground(GamingPalette.card.opacity(0.55))
   }
 
   @ViewBuilder
@@ -175,13 +180,13 @@ struct TabsView: View {
       Image(uiImage: icon)
         .resizable()
         .scaledToFit()
-        .frame(width: 36, height: 36)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(width: 52, height: 52)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(alignment: .bottomTrailing) {
           if application.active {
             Circle()
               .fill(themeStore.accentColor)
-              .frame(width: 10, height: 10)
+              .frame(width: 12, height: 12)
               .overlay(Circle().stroke(GamingPalette.card, lineWidth: 2))
           }
         }
@@ -189,7 +194,7 @@ struct TabsView: View {
       Image(systemName: application.active ? "macwindow.fill" : "macwindow")
         .font(.title3)
         .foregroundStyle(application.active ? themeStore.accentColor : GamingPalette.mutedForeground)
-        .frame(width: 36, height: 36)
+        .frame(width: 52, height: 52)
     }
   }
 
@@ -271,6 +276,15 @@ struct TabsView: View {
     connectionManager.execute(ActionPayload(type: .closeTab, browser: tab.browser, tabId: tab.tabId)) { _ in
       fetchTabs()
     }
+  }
+}
+
+private struct ApplicationTileButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .scaleEffect(configuration.isPressed ? 0.94 : 1)
+      .opacity(configuration.isPressed ? 0.82 : 1)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
   }
 }
 

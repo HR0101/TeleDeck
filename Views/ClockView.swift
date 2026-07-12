@@ -30,6 +30,7 @@ private enum ClockToolMode: String, CaseIterable, Identifiable {
 private enum ClockDesignStyle: String, CaseIterable, Identifiable {
   case digital = "デジタル"
   case flip = "パタパタ"
+  case analog = "アナログ"
 
   var id: String { rawValue }
 }
@@ -174,6 +175,15 @@ struct ClockView: View {
               value: areControlsVisible
             )
             .padding(.vertical, areControlsVisible ? 0 : 20)
+        case .analog:
+          AnalogClockView(date: now)
+            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+            .animation(
+              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+              value: areControlsVisible
+            )
+            .padding(.vertical, areControlsVisible ? 0 : 20)
         }
       }
 
@@ -289,11 +299,17 @@ private struct TimerToolView: View {
           model.start()
         }
       }
+      .font(.title3.weight(.bold))
+      .padding(.horizontal, 32)
+      .padding(.vertical, 14)
       .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
 
       Button("リセット") {
         model.reset()
       }
+      .font(.title3.weight(.bold))
+      .padding(.horizontal, 32)
+      .padding(.vertical, 14)
       .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
     }
   }
@@ -320,11 +336,17 @@ private struct StopwatchToolView: View {
             model.start()
           }
         }
+        .font(.title3.weight(.bold))
+        .padding(.horizontal, 32)
+        .padding(.vertical, 14)
         .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
 
         Button("リセット") {
           model.reset()
         }
+        .font(.title3.weight(.bold))
+        .padding(.horizontal, 32)
+        .padding(.vertical, 14)
         .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
       }
     }
@@ -356,11 +378,17 @@ private struct PomodoroToolView: View {
             model.start()
           }
         }
+        .font(.title3.weight(.bold))
+        .padding(.horizontal, 32)
+        .padding(.vertical, 14)
         .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
 
         Button("リセット") {
           model.reset()
         }
+        .font(.title3.weight(.bold))
+        .padding(.horizontal, 32)
+        .padding(.vertical, 14)
         .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
       }
     }

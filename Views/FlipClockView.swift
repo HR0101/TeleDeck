@@ -13,87 +13,92 @@ struct FlipClockView: View {
 
   var body: some View {
     HStack(spacing: 16) {
-      FlipUnitGroup(value: Calendar.current.component(.hour, from: date))
+      DoubleFlipPanel(value: Calendar.current.component(.hour, from: date))
 
       Text(":")
         .font(.system(size: 64, weight: .bold, design: .rounded))
         .foregroundStyle(themeStore.accentColor)
         .offset(y: -4)
 
-      FlipUnitGroup(value: Calendar.current.component(.minute, from: date))
+      DoubleFlipPanel(value: Calendar.current.component(.minute, from: date))
 
       Text(":")
         .font(.system(size: 64, weight: .bold, design: .rounded))
         .foregroundStyle(themeStore.accentColor)
         .offset(y: -4)
 
-      FlipUnitGroup(value: Calendar.current.component(.second, from: date))
+      DoubleFlipPanel(value: Calendar.current.component(.second, from: date))
     }
     .shadow(color: themeStore.accentColor.opacity(0.2), radius: 20)
   }
 }
 
-private struct FlipUnitGroup: View {
+private struct DoubleFlipPanel: View {
+  let value: Int
+  
+  var body: some View {
+    HStack(spacing: 8) {
+      SingleFlipPanel(value: value / 10)
+      SingleFlipPanel(value: value % 10)
+    }
+  }
+}
+
+private struct SingleFlipPanel: View {
   let value: Int
 
   var body: some View {
-    HStack(spacing: 6) {
-      FlipDigit(digit: value / 10)
-      FlipDigit(digit: value % 10)
+    ZStack {
+      SingleFlipPanelContent(value: value)
+        .id(value)
+        .transition(
+          .asymmetric(
+            // 新しいパネルは手前側に跳ね上がった状態(90度)から、通常(0度)へパタンと降りてくる
+            insertion: .modifier(
+              active: FlipTopTransition(angle: 90), identity: FlipTopTransition(angle: 0)),
+            // 古いパネルは通常(0度)から、奥へ(-90度)落ちるように消える
+            removal: .modifier(
+              active: FlipTopTransition(angle: -90), identity: FlipTopTransition(angle: 0))
+          )
+        )
     }
+    // 少しゆっくりめにして、めくれる動きを見やすくする
+    .animation(.spring(response: 0.5, dampingFraction: 0.75), value: value)
   }
 }
 
-private struct FlipDigit: View {
+private struct SingleFlipPanelContent: View {
   @Environment(ThemeStore.self) private var themeStore
-  let digit: Int
+  let value: Int
 
   var body: some View {
-    ZStack {
-      Text("\(digit)")
-        .font(.system(size: 110, weight: .bold, design: .rounded))
-        .monospacedDigit()
-        .foregroundStyle(themeStore.accentColor)
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
-        .background(
-          RoundedRectangle(cornerRadius: 12)
-            .fill(GamingPalette.background)
-            .overlay(
-              RoundedRectangle(cornerRadius: 12)
-                .stroke(themeStore.accentColor.opacity(0.3), lineWidth: 1)
-            )
-        )
-        .overlay(
-          Rectangle()
-            .fill(GamingPalette.background)
-            .frame(height: 2)
-            .shadow(color: .black.opacity(0.5), radius: 1, y: 1),
-          alignment: .center
-        )
-        .drawingGroup()
-    }
-    .id(digit)
-    .transition(
-      .asymmetric(
-        insertion: .modifier(
-          active: FlipTransition(angle: 90), identity: FlipTransition(angle: 0)),
-        removal: .modifier(
-          active: FlipTransition(angle: -90), identity: FlipTransition(angle: 0))
+    Text("\(value)")
+      .font(.system(size: 110, weight: .bold, design: .rounded))
+      .monospacedDigit()
+      .foregroundStyle(themeStore.accentColor)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 18)
+      .frame(minWidth: 80) // 1桁が安定して収まる幅
+      .background(
+        RoundedRectangle(cornerRadius: 16)
+          .fill(GamingPalette.background)
+          .overlay(
+            RoundedRectangle(cornerRadius: 16)
+              .stroke(themeStore.accentColor.opacity(0.3), lineWidth: 1)
+          )
       )
-    )
-    .animation(.spring(response: 0.35, dampingFraction: 0.7), value: digit)
+      .drawingGroup()
   }
 }
 
-private struct FlipTransition: ViewModifier {
+private struct FlipTopTransition: ViewModifier {
   let angle: Double
   func body(content: Content) -> some View {
     content
       .rotation3DEffect(
         .degrees(angle),
         axis: (x: 1, y: 0, z: 0),
-        anchor: .center,
+        anchor: .top, // パネルの上端を軸にしてめくれる
         perspective: 0.6
       )
       .opacity(abs(angle) >= 90 ? 0 : 1)
