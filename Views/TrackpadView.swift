@@ -27,7 +27,7 @@ struct TrackpadView: View {
             Image(systemName: "hand.point.up.left")
               .font(.system(size: 40))
               .foregroundStyle(themeStore.accentColor)
-            Text("1本指ドラッグ: カーソル移動 / 1本指タップ: 左クリック\n2本指タップ: 右クリック / 2本指ドラッグ: スクロール")
+            Text("1本指ドラッグ: カーソル移動 / 1本指タップ: 左クリック\n2本指タップ: 右クリック / 2本指ドラッグ: スクロール\n3本指スワイプ: Macのスペース切替")
               .font(.caption)
               .foregroundStyle(GamingPalette.mutedForeground)
               .multilineTextAlignment(.center)
@@ -46,6 +46,14 @@ struct TrackpadView: View {
             },
             onRightClick: {
               connectionManager.sendTrackpadClick(button: "right")
+            },
+            onThreeFingerSwipeLeft: {
+              // 3本指左スワイプ = 次のスペースへ（Control+右矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "right"]))
+            },
+            onThreeFingerSwipeRight: {
+              // 3本指右スワイプ = 前のスペースへ（Control+左矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "left"]))
             }
           )
         }

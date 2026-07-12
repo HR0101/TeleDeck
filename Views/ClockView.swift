@@ -27,17 +27,30 @@ private enum ClockToolMode: String, CaseIterable, Identifiable {
   var id: String { rawValue }
 }
 
+private enum ClockDesignStyle: String, CaseIterable, Identifiable {
+  case digital = "デジタル"
+  case flip = "パタパタ"
+
+  var id: String { rawValue }
+}
+
 /// 焼き付き防止のため時刻表示をずらす間隔（秒）
 private let burnInProtectionInterval: TimeInterval = 30
 /// 焼き付き防止でずらす最大幅（ポイント）。表示が破綻しない程度のごくわずかな量にとどめる
 private let burnInProtectionMaxOffset: CGFloat = 12
+/// 操作がない状態で時計表示へ戻るまでの時間
+private let clockControlsAutoHideDelay: TimeInterval = 4
 
 struct ClockView: View {
   @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var now = Date()
   @State private var selectedMode: ClockToolMode = .timer
+  @AppStorage("clockDesignStyle") private var clockStyle: ClockDesignStyle = .digital
   @State private var clockOffsetX: CGFloat = 0
   @State private var clockOffsetY: CGFloat = 0
+  @State private var areControlsVisible = true
+  @State private var lastInteraction = Date()
 
   private let clockTicker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
   private let burnInProtectionTicker = Timer.publish(
@@ -45,15 +58,45 @@ struct ClockView: View {
   ).autoconnect()
 
   var body: some View {
-    ScrollView {
-      VStack(spacing: 32) {
-        clockSection
-        toolSection
+    GeometryReader { proxy in
+      ZStack {
+        GamingBackground(accentColor: themeStore.accentColor)
+
+        VStack(spacing: 0) {
+          if areControlsVisible {
+            clockSection(in: proxy.size)
+
+            Spacer(minLength: 24)
+
+            toolSection
+              .frame(maxWidth: 640)
+              .padding(.horizontal, 28)
+              .padding(.bottom, 28)
+              .transition(.move(edge: .bottom).combined(with: .opacity))
+          } else {
+            Spacer()
+
+            clockSection(in: proxy.size)
+
+            Spacer()
+          }
+        }
       }
-      .padding()
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .contentShape(Rectangle())
+      .simultaneousGesture(
+        TapGesture().onEnded {
+          revealControls()
+        }
+      )
     }
+    .ignoresSafeArea()
     .onReceive(clockTicker) { tickedDate in
       now = tickedDate
+      if areControlsVisible,
+         tickedDate.timeIntervalSince(lastInteraction) >= clockControlsAutoHideDelay {
+        hideControls()
+      }
     }
     .onReceive(burnInProtectionTicker) { _ in
       shiftClockPosition()
@@ -62,25 +105,104 @@ struct ClockView: View {
 
   // MARK: - 時刻表示
 
-  private var clockSection: some View {
-    VStack(spacing: 8) {
-      Text(
-        now,
-        format: .dateTime
-          .hour(.twoDigits(amPM: .omitted))
-          .minute(.twoDigits)
-          .second(.twoDigits)
-      )
-      .font(.system(size: 64, weight: .bold, design: .rounded))
-      .monospacedDigit()
-      .foregroundStyle(GamingPalette.foreground)
+  private func clockSection(in size: CGSize) -> some View {
+    VStack(spacing: 18) {
+      if areControlsVisible {
+        VStack(spacing: 16) {
+          HStack(spacing: 10) {
+            Capsule()
+              .fill(themeStore.accentColor)
+              .frame(width: 28, height: 3)
+
+            Text("TELEDECK CLOCK")
+              .font(.system(size: 13, weight: .semibold, design: .rounded))
+              .tracking(3.2)
+              .foregroundStyle(themeStore.accentColor)
+
+            Capsule()
+              .fill(themeStore.accentColor)
+              .frame(width: 28, height: 3)
+          }
+
+          Picker("デザイン", selection: $clockStyle) {
+            ForEach(ClockDesignStyle.allCases) { style in
+              Text(style.rawValue).tag(style)
+            }
+          }
+          .pickerStyle(.segmented)
+          .frame(width: 240)
+        }
+      }
+
+      Group {
+        switch clockStyle {
+        case .digital:
+          Text(
+            now,
+            format: .dateTime
+              .hour(.twoDigits(amPM: .omitted))
+              .minute(.twoDigits)
+              .second(.twoDigits)
+          )
+          .lineLimit(1)
+          .minimumScaleFactor(0.5)
+          .font(
+            .system(
+              size: min(
+                max(size.width * (areControlsVisible ? 0.16 : 0.25), areControlsVisible ? 84 : 120),
+                areControlsVisible ? 176 : 260
+              ),
+              weight: .medium,
+              design: .rounded
+            )
+          )
+          .monospacedDigit()
+          .tracking(-2)
+          .foregroundStyle(
+            LinearGradient(
+              colors: [GamingPalette.foreground, themeStore.accentColor],
+              startPoint: .top,
+              endPoint: .bottom
+            )
+          )
+          .shadow(color: themeStore.accentColor.opacity(0.35), radius: 22)
+        case .flip:
+          FlipClockView(date: now)
+            .scaleEffect(areControlsVisible ? 0.75 : 1.0)
+            .animation(
+              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+              value: areControlsVisible
+            )
+            .padding(.vertical, areControlsVisible ? 0 : 20)
+        }
+      }
 
       Text(now, format: .dateTime.year().month().day().weekday(.wide))
-        .font(.title3)
+        .font(.system(size: 20, weight: .medium, design: .rounded))
         .foregroundStyle(GamingPalette.mutedForeground)
     }
-    .padding(.top, 32)
+    .frame(maxWidth: .infinity)
+    .padding(.top, areControlsVisible ? 64 : 0)
     .offset(x: clockOffsetX, y: clockOffsetY)
+    .animation(
+      reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+      value: areControlsVisible
+    )
+  }
+
+  private func revealControls() {
+    lastInteraction = Date()
+    guard !areControlsVisible else { return }
+    withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
+      areControlsVisible = true
+    }
+  }
+
+  private func hideControls() {
+    guard areControlsVisible else { return }
+    withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
+      areControlsVisible = false
+    }
   }
 
   /// 画面焼き付き防止のため、時刻表示をごくわずかランダムな方向へなめらかにずらす
@@ -112,7 +234,8 @@ struct ClockView: View {
           PomodoroToolView()
         }
       }
-      .padding()
+      .padding(.horizontal, 20)
+      .padding(.vertical, 16)
       .gamingCard(accentColor: themeStore.accentColor)
     }
   }

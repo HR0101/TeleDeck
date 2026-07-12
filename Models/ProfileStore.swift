@@ -51,6 +51,13 @@ final class ProfileStore {
 
   // MARK: - ローカル編集（現在のactiveProfileに対して行う）
 
+  /// iPad上で選択したプロファイルへ切り替え、Mac側にも選択状態を同期する
+  func setActiveProfile(id: UUID) {
+    guard profiles.contains(where: { $0.id == id }), id != activeProfileId else { return }
+    activeProfileId = id
+    notifyLocalChange()
+  }
+
   func addButton(_ button: ButtonConfig) {
     guard let profileIndex = profiles.firstIndex(where: { $0.id == activeProfileId }) else { return }
     profiles[profileIndex].buttons.append(button)

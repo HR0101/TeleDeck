@@ -30,7 +30,8 @@ final class ConnectionManager {
 
   private let bonjourClient: BonjourClient
   private var pendingRequests: [String: (Result<Void, Error>) -> Void] = [:]
-  private var pendingTabsCompletion: (([TabInfo]) -> Void)?
+  private var pendingTabsCompletion: (([TabInfo], [MacApplicationInfo]) -> Void)?
+  private var pendingApplicationsCompletion: (([MacApplicationInfo]) -> Void)?
   private let deviceName = UIDevice.current.name
 
   /// ユーザー操作による切断かどうか（自動再接続を行うかどうかの判定に使う）
@@ -88,9 +89,15 @@ final class ConnectionManager {
   }
 
   /// Mac側の開いているタブ一覧を取得する
-  func requestTabs(completion: @escaping ([TabInfo]) -> Void) {
+  func requestTabs(completion: @escaping ([TabInfo], [MacApplicationInfo]) -> Void) {
     pendingTabsCompletion = completion
     send(GetTabsMessage())
+  }
+
+  /// Mac側で起動中のアプリケーション一覧を取得する
+  func requestApplications(completion: @escaping ([MacApplicationInfo]) -> Void) {
+    pendingApplicationsCompletion = completion
+    send(GetApplicationsMessage())
   }
 
   /// iPad側での編集内容をMac（プロファイル設定の本体）へ反映依頼する
@@ -190,8 +197,12 @@ final class ConnectionManager {
         onProfileSync?(message.profiles, message.activeProfileId)
       case "tabsList":
         let message = try JSONDecoder().decode(TabsListMessage.self, from: data)
-        pendingTabsCompletion?(message.tabs)
+        pendingTabsCompletion?(message.tabs, message.applications ?? [])
         pendingTabsCompletion = nil
+      case "applicationsList":
+        let message = try JSONDecoder().decode(ApplicationsListMessage.self, from: data)
+        pendingApplicationsCompletion?(message.applications)
+        pendingApplicationsCompletion = nil
       default:
         break
       }

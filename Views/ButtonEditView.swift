@@ -239,6 +239,9 @@ struct ButtonEditView: View {
       Text("タブ一覧画面から設定されるアクションです")
         .font(.caption)
         .foregroundStyle(GamingPalette.mutedForeground)
+    case .activateApplication:
+      TextField("アプリ名 または Bundle ID", text: targetBinding)
+        .foregroundStyle(GamingPalette.foreground)
     case .windowLayout:
       windowLayoutFields
     }
@@ -413,7 +416,7 @@ private struct StepRow: View {
     case .delay:
       Stepper("待機: \(step.ms ?? 500) ms", value: msBinding, in: 0...10000, step: 100)
         .foregroundStyle(GamingPalette.foreground)
-    case .multiAction, .openFolder, .activateTab, .closeTab, .windowLayout:
+    case .multiAction, .openFolder, .activateTab, .closeTab, .activateApplication, .windowLayout:
       // マルチアクションのステップにはフォルダー・タブ操作・ウィンドウ配置・入れ子のマルチアクションを登録できない
       Text("マルチアクション内には登録できません")
         .font(.caption)

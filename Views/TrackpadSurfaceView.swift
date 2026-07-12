@@ -3,7 +3,8 @@
 //  TeleDeck
 //
 //  トラックパッド操作面。SwiftUI標準のDragGestureは1本指しか判定できないため、
-//  1本指=移動・2本指=スクロール・1本指タップ=左クリック・2本指タップ=右クリックを
+//  1本指=移動・2本指=スクロール・1本指タップ=左クリック・2本指タップ=右クリック・
+//  3本指左右スワイプ=Macのスペース切替を
 //  UIKitのジェスチャーレコグナイザーで判定しUIViewRepresentable経由でSwiftUIへ橋渡しする。
 //
 
@@ -15,6 +16,8 @@ struct TrackpadSurfaceView: UIViewRepresentable {
   var onScroll: (CGFloat, CGFloat) -> Void
   var onLeftClick: () -> Void
   var onRightClick: () -> Void
+  var onThreeFingerSwipeLeft: () -> Void
+  var onThreeFingerSwipeRight: () -> Void
 
   func makeUIView(context: Context) -> UIView {
     let view = UIView()
@@ -33,9 +36,20 @@ struct TrackpadSurfaceView: UIViewRepresentable {
     // 2本指タップの瞬間に1本指タップが誤って先に成立しないようにする
     singleTap.require(toFail: twoFingerTap)
 
+    // 3本指スワイプ（Macのスペース切替用）。panはmaximumNumberOfTouches=2までしか反応しないため競合しない
+    let threeFingerSwipeLeft = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleThreeFingerSwipeLeft(_:)))
+    threeFingerSwipeLeft.numberOfTouchesRequired = 3
+    threeFingerSwipeLeft.direction = .left
+
+    let threeFingerSwipeRight = UISwipeGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleThreeFingerSwipeRight(_:)))
+    threeFingerSwipeRight.numberOfTouchesRequired = 3
+    threeFingerSwipeRight.direction = .right
+
     view.addGestureRecognizer(pan)
     view.addGestureRecognizer(singleTap)
     view.addGestureRecognizer(twoFingerTap)
+    view.addGestureRecognizer(threeFingerSwipeLeft)
+    view.addGestureRecognizer(threeFingerSwipeRight)
 
     return view
   }
@@ -84,6 +98,14 @@ struct TrackpadSurfaceView: UIViewRepresentable {
 
     @objc func handleTwoFingerTap(_ recognizer: UITapGestureRecognizer) {
       parent.onRightClick()
+    }
+
+    @objc func handleThreeFingerSwipeLeft(_ recognizer: UISwipeGestureRecognizer) {
+      parent.onThreeFingerSwipeLeft()
+    }
+
+    @objc func handleThreeFingerSwipeRight(_ recognizer: UISwipeGestureRecognizer) {
+      parent.onThreeFingerSwipeRight()
     }
   }
 }

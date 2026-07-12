@@ -25,6 +25,8 @@ enum ActionType: String, Codable {
   case activateTab
   /// ブラウザの指定タブを閉じる
   case closeTab
+  /// Macで起動中のアプリケーションを前面化する
+  case activateApplication
   /// ウィンドウをプリセットのレイアウトへ配置する
   case windowLayout
 }
@@ -32,7 +34,7 @@ enum ActionType: String, Codable {
 /// 実行するアクションの内容
 struct ActionPayload: Codable {
   var type: ActionType
-  /// launchApp: アプリ名またはBundle ID / openURL: URL文字列
+  /// launchApp / activateApplication: アプリ名またはBundle ID / openURL: URL文字列
   var target: String?
   /// hotkey: 送信するキーの組み合わせ（例: ["cmd", "c"]）
   var keys: [String]?
@@ -105,6 +107,28 @@ struct GetTabsMessage: Codable {
   var type: String = "getTabs"
 }
 
+/// iPad → Mac: 起動中のアプリケーション一覧の取得要求
+struct GetApplicationsMessage: Codable {
+  var type: String = "getApplications"
+}
+
+/// Mac上で起動中のユーザー向けアプリケーションの情報
+struct MacApplicationInfo: Codable, Identifiable {
+  let bundleIdentifier: String
+  let name: String
+  let active: Bool
+  /// Mac側で64pxに縮小したアプリアイコンのPNG。旧エージェントとの互換性のため任意。
+  var iconPNGData: Data? = nil
+
+  var id: String { bundleIdentifier }
+}
+
+/// Mac → iPad: 起動中のアプリケーション一覧の応答
+struct ApplicationsListMessage: Codable {
+  var type: String = "applicationsList"
+  let applications: [MacApplicationInfo]
+}
+
 /// 1つのブラウザタブの情報
 struct TabInfo: Codable {
   /// "Google Chrome" / "Safari"
@@ -119,6 +143,8 @@ struct TabInfo: Codable {
 struct TabsListMessage: Codable {
   var type: String = "tabsList"
   let tabs: [TabInfo]
+  /// 後方互換のため省略可能。新しいMacエージェントはアプリ一覧も同時に返す。
+  var applications: [MacApplicationInfo]? = nil
 }
 
 /// iPad → Mac: 保存済みトークンでの再ペアリング要求（PIN入力を省略する）。応答は`PairResultMessage`を再利用する

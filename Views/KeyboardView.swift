@@ -90,7 +90,11 @@ struct KeyboardView: View {
       modifierButton(.opt)
       modifierButton(.cmd)
 
-      keyButton(KeyDefinition(label: "space", keyName: "space", widthWeight: 5))
+      // macOSのJISキーボードにある専用の英数/かなキーを送信する。
+      // Commandキーの単独タップ設定には依存しない。
+      inputSourceButton(label: "英数", keyName: "eisu")
+      keyButton(KeyDefinition(label: "space", keyName: "space", widthWeight: 3.5))
+      inputSourceButton(label: "かな", keyName: "kana")
 
       modifierButton(.cmd)
       modifierButton(.opt)
@@ -135,7 +139,28 @@ struct KeyboardView: View {
     .frame(minWidth: 32 * widthWeight)
   }
 
+  /// macOSの専用英数/かなキーを、トグル中の修飾キーとは独立して送信するボタン
+  private func inputSourceButton(label: String, keyName: String, widthWeight: CGFloat = 1.3) -> some View {
+    Button {
+      sendInputSourceKey(keyName)
+    } label: {
+      Text(label)
+        .font(.system(size: 13))
+        .foregroundStyle(GamingPalette.foreground)
+        .frame(maxWidth: .infinity, minHeight: 40)
+    }
+    .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: false))
+    .frame(maxWidth: .infinity)
+    .layoutPriority(widthWeight)
+    .frame(minWidth: 32 * widthWeight)
+  }
+
   // MARK: - キー送信
+
+  /// 専用の英数/かなキーを送信する。トグル中の他の修飾キーとは合成しない独立した操作
+  private func sendInputSourceKey(_ keyName: String) {
+    connectionManager.execute(ActionPayload(type: .hotkey, keys: [keyName]))
+  }
 
   private func toggleModifier(_ modifier: ModifierKey) {
     if activeModifiers.contains(modifier) {

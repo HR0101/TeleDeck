@@ -2,8 +2,9 @@
 //  MainTabView.swift
 //  TeleDeck
 //
-//  ペアリング完了後のメイン画面。パネル/時計/タブの3画面を、タブバーのタップと
-//  横スワイプの両方で行き来できる（設計書4章「横スワイプまたは下部タブバーで3画面を行き来する」に対応）。
+//  ペアリング完了後のメイン画面。パネル/時計/タブ/トラックパッド/キーボードの5画面を、
+//  下部の自作タブバーのタップのみで切り替える（トラックパッド画面の3本指スワイプ操作と
+//  ジェスチャーが競合しないよう、横スワイプでの画面切り替えは行わない）。
 //
 
 import SwiftUI
@@ -46,25 +47,27 @@ struct MainTabView: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
-        // 標準のタブバー形式TabViewはタップのみでスワイプに対応しないため、
-        // pageスタイル（スワイプ対応）+ 自作のタブバーを組み合わせている
-        TabView(selection: $selectedTab) {
-          PanelView(connectionManager: connectionManager)
-            .tag(MainTab.panel)
+        // TabView(pageスタイル)によるスワイプ切り替えは廃止し、selectedTabの値に応じて
+        // 表示ビューを直接切り替える（下部の自作タブバーのタップのみで画面遷移させるため）
+        Group {
+          switch selectedTab {
+          case .panel:
+            PanelView(connectionManager: connectionManager)
 
-          ClockView()
-            .tag(MainTab.clock)
+          case .clock:
+            ClockView()
 
-          TabsView(connectionManager: connectionManager)
-            .tag(MainTab.tabs)
+          case .tabs:
+            TabsView(connectionManager: connectionManager)
 
-          TrackpadView(connectionManager: connectionManager)
-            .tag(MainTab.trackpad)
+          case .trackpad:
+            TrackpadView(connectionManager: connectionManager)
 
-          KeyboardView(connectionManager: connectionManager)
-            .tag(MainTab.keyboard)
+          case .keyboard:
+            KeyboardView(connectionManager: connectionManager)
+          }
         }
-        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
 
         customTabBar
       }
@@ -78,7 +81,9 @@ struct MainTabView: View {
         }
       }
       .toolbarBackground(.hidden, for: .navigationBar)
+      .toolbar(selectedTab == .clock ? .hidden : .visible, for: .navigationBar)
     }
+    .statusBarHidden(selectedTab == .clock)
     .sheet(isPresented: $isShowingSettings) {
       SettingsView(themeStore: themeStore)
     }
