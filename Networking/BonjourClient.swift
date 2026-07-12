@@ -62,6 +62,14 @@ final class BonjourClient {
     })
   }
 
+  /// Keep-Alive用にWebSocketのpingフレームを送信する（Mac側はautoReplyPingで自動応答する）
+  func sendPing() {
+    guard let connection else { return }
+    let metadata = NWProtocolWebSocket.Metadata(opcode: .ping)
+    let context = NWConnection.ContentContext(identifier: "ping", metadata: [metadata])
+    connection.send(content: Data(), contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
+  }
+
   // MARK: - 接続処理
 
   private func connect(to endpoint: NWEndpoint) {

@@ -3,6 +3,7 @@
 //  TeleDeck
 //
 //  Mac側との接続状態・ペアリング状態を管理し、Viewからの唯一の窓口となるクラス。
+//  保存済みトークンによる自動再ペアリング、切断時の自動再接続、Keep-Alive pingにも対応する。
 //
 
 import Foundation
@@ -15,6 +16,8 @@ final class ConnectionManager {
   enum ConnectionState: Equatable {
     case disconnected
     case searching
+    /// 保存済みトークンでの自動再ペアリングを試行中
+    case resuming
     case waitingForPairing
     case paired
     case failed(String)
@@ -22,22 +25,34 @@ final class ConnectionManager {
 
   private(set) var state: ConnectionState = .disconnected
 
+  /// Macから最新のプロファイル一覧が届いたときに呼ばれる（Macがプロファイル設定の本体のため）
+  var onProfileSync: (([ProfileConfig], UUID) -> Void)?
+
   private let bonjourClient: BonjourClient
-  private var sessionToken: String?
   private var pendingRequests: [String: (Result<Void, Error>) -> Void] = [:]
+  private var pendingTabsCompletion: (([TabInfo]) -> Void)?
   private let deviceName = UIDevice.current.name
+
+  /// ユーザー操作による切断かどうか（自動再接続を行うかどうかの判定に使う）
+  private var isManuallyDisconnected = false
+  private var reconnectAttempt = 0
+  private var reconnectWorkItem: DispatchWorkItem?
+  private var keepAliveTimer: Timer?
+
+  private static let maxReconnectDelay: TimeInterval = 30
+  private static let keepAliveInterval: TimeInterval = 20
 
   init() {
     bonjourClient = BonjourClient()
 
     bonjourClient.onConnected = { [weak self] in
-      self?.state = .waitingForPairing
+      self?.handleConnected()
     }
     bonjourClient.onDisconnected = { [weak self] in
-      self?.state = .disconnected
+      self?.handleDisconnected()
     }
     bonjourClient.onFailure = { [weak self] message in
-      self?.state = .failed(message)
+      self?.handleFailure(message)
     }
     bonjourClient.onMessage = { [weak self] data in
       self?.handleIncoming(data: data)
@@ -46,14 +61,18 @@ final class ConnectionManager {
 
   /// Mac探索〜WebSocket接続を開始する
   func connect() {
+    isManuallyDisconnected = false
+    reconnectWorkItem?.cancel()
     state = .searching
     bonjourClient.start()
   }
 
   func disconnect() {
+    isManuallyDisconnected = true
+    reconnectWorkItem?.cancel()
+    stopKeepAlive()
     bonjourClient.stop()
     state = .disconnected
-    sessionToken = nil
   }
 
   /// PINを送信してペアリングを行う
@@ -66,6 +85,83 @@ final class ConnectionManager {
     let requestId = UUID().uuidString
     pendingRequests[requestId] = completion
     send(ExecuteMessage(requestId: requestId, action: action))
+  }
+
+  /// Mac側の開いているタブ一覧を取得する
+  func requestTabs(completion: @escaping ([TabInfo]) -> Void) {
+    pendingTabsCompletion = completion
+    send(GetTabsMessage())
+  }
+
+  /// iPad側での編集内容をMac（プロファイル設定の本体）へ反映依頼する
+  func sendProfileUpdate(profiles: [ProfileConfig], activeProfileId: UUID) {
+    send(UpdateProfilesMessage(profiles: profiles, activeProfileId: activeProfileId))
+  }
+
+  // MARK: - トラックパッド（高頻度・一方向のためAckを待たない）
+
+  func sendTrackpadMove(dx: Double, dy: Double) {
+    send(TrackpadMoveMessage(dx: dx, dy: dy))
+  }
+
+  func sendTrackpadClick(button: String) {
+    send(TrackpadClickMessage(button: button))
+  }
+
+  func sendTrackpadScroll(dx: Double, dy: Double) {
+    send(TrackpadScrollMessage(dx: dx, dy: dy))
+  }
+
+  // MARK: - 接続ライフサイクル
+
+  private func handleConnected() {
+    reconnectAttempt = 0
+    if let savedToken = KeychainTokenStore.load() {
+      state = .resuming
+      send(ResumeSessionMessage(token: savedToken))
+    } else {
+      state = .waitingForPairing
+    }
+    startKeepAlive()
+  }
+
+  private func handleDisconnected() {
+    stopKeepAlive()
+    state = .disconnected
+    scheduleReconnectIfNeeded()
+  }
+
+  private func handleFailure(_ message: String) {
+    stopKeepAlive()
+    state = .failed(message)
+    scheduleReconnectIfNeeded()
+  }
+
+  /// 切断時に指数バックオフで自動再接続する（ユーザーが明示的に切断した場合は行わない）
+  private func scheduleReconnectIfNeeded() {
+    guard !isManuallyDisconnected else { return }
+    reconnectWorkItem?.cancel()
+
+    let delay = min(pow(2.0, Double(reconnectAttempt)), Self.maxReconnectDelay)
+    reconnectAttempt += 1
+
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.connect()
+    }
+    reconnectWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+  }
+
+  private func startKeepAlive() {
+    stopKeepAlive()
+    keepAliveTimer = Timer.scheduledTimer(withTimeInterval: Self.keepAliveInterval, repeats: true) { [weak self] _ in
+      self?.bonjourClient.sendPing()
+    }
+  }
+
+  private func stopKeepAlive() {
+    keepAliveTimer?.invalidate()
+    keepAliveTimer = nil
   }
 
   // MARK: - 送受信
@@ -89,6 +185,13 @@ final class ConnectionManager {
       case "ack":
         let response = try JSONDecoder().decode(AckMessage.self, from: data)
         handleAck(response)
+      case "profileSync":
+        let message = try JSONDecoder().decode(ProfileSyncMessage.self, from: data)
+        onProfileSync?(message.profiles, message.activeProfileId)
+      case "tabsList":
+        let message = try JSONDecoder().decode(TabsListMessage.self, from: data)
+        pendingTabsCompletion?(message.tabs)
+        pendingTabsCompletion = nil
       default:
         break
       }
@@ -99,8 +202,14 @@ final class ConnectionManager {
 
   private func handlePairResult(_ response: PairResultMessage) {
     if response.success {
-      sessionToken = response.token
+      if let token = response.token {
+        KeychainTokenStore.save(token)
+      }
       state = .paired
+    } else if state == .resuming {
+      // 保存済みトークンが無効だった場合はPIN入力へフォールバックする
+      KeychainTokenStore.delete()
+      state = .waitingForPairing
     } else {
       state = .failed(response.errorMessage ?? "ペアリングに失敗しました")
     }
