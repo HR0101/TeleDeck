@@ -10,10 +10,11 @@ import SwiftUI
 
 /// アプリ全体で固定のダークトーン（アクセントカラーの選択に関わらず変わらない構造色）
 enum GamingPalette {
-  static let background = Color(hex: 0x0F0F23)
-  static let backgroundElevated = Color(hex: 0x1A1830)
-  static let card = Color(hex: 0x1E1C35)
-  static let muted = Color(hex: 0x27273B)
+  // OLED/LCDどちらでも黒を基準に見せ、静的背景でも階層が分かる程度の差だけ残す。
+  static let background = Color(hex: 0x050507)
+  static let backgroundElevated = Color(hex: 0x0D0D12)
+  static let card = Color(hex: 0x16161D)
+  static let muted = Color(hex: 0x24242D)
   static let foreground = Color(hex: 0xE2E8F0)
   static let mutedForeground = Color(hex: 0x94A3B8)
   static let destructive = Color(hex: 0xEF4444)
@@ -34,6 +35,8 @@ extension Color {
 /// モーション低減設定が有効な場合はグローのアニメーションを止める。
 struct GamingBackground: View {
   var accentColor: Color = GamingPalette.muted
+  /// 電池消費の大きいぼかしグローを表示するかどうか。OFF時は静的な黒ベースの背景だけを描画する。
+  var showsGlow = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var animate = false
@@ -46,24 +49,41 @@ struct GamingBackground: View {
         endPoint: .bottomTrailing
       )
 
-      Circle()
-        .fill(accentColor.opacity(0.28))
-        .frame(width: 420, height: 420)
-        .blur(radius: 120)
-        .offset(x: animate ? -80 : -140, y: animate ? -220 : -180)
+      if showsGlow {
+        Circle()
+          .fill(accentColor.opacity(0.28))
+          .frame(width: 420, height: 420)
+          .blur(radius: 120)
+          .offset(x: animate ? -80 : -140, y: animate ? -220 : -180)
 
-      Circle()
-        .fill(accentColor.opacity(0.18))
-        .frame(width: 360, height: 360)
-        .blur(radius: 120)
-        .offset(x: animate ? 140 : 100, y: animate ? 260 : 300)
+        Circle()
+          .fill(accentColor.opacity(0.18))
+          .frame(width: 360, height: 360)
+          .blur(radius: 120)
+          .offset(x: animate ? 140 : 100, y: animate ? 260 : 300)
+      }
     }
     .ignoresSafeArea()
     .onAppear {
-      guard !reduceMotion else { return }
-      withAnimation(.easeInOut(duration: 10).repeatForever(autoreverses: true)) {
-        animate = true
+      startGlowAnimationIfNeeded()
+    }
+    .onChange(of: showsGlow) { _, enabled in
+      if enabled {
+        startGlowAnimationIfNeeded()
+      } else {
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+          animate = false
+        }
       }
+    }
+  }
+
+  private func startGlowAnimationIfNeeded() {
+    guard showsGlow, !reduceMotion else { return }
+    withAnimation(.easeInOut(duration: 10).repeatForever(autoreverses: true)) {
+      animate = true
     }
   }
 }

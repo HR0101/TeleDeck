@@ -11,15 +11,19 @@ import UIKit
 
 struct PanelView: View {
   let connectionManager: ConnectionManager
-  /// 編集モードの切り替えボタンはMainTabViewのツールバー（設定ボタンの隣）に置くため、
-  /// パネル自身の見出し行を圧縮できるよう親から状態を受け取る
+  /// パネル固有の編集モードを、左側のコントロールレールから切り替えるため親と状態を共有する。
   @Binding var isEditMode: Bool
+  /// 設定シートの表示はMainTabViewが管理するため、タップ時の処理だけを受け取る。
+  var onOpenSettings: () -> Void
 
   @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @AppStorage("panelView.sidebarVisible") private var isSidebarVisible = true
   @State private var profileStore = ProfileStore()
   @State private var editingButton: ButtonConfig?
   @State private var newButtonPosition: GridPosition?
   @State private var buttonPendingDeletion: ButtonConfig?
+  @State private var profileChangeNotice: String?
   /// 空 = プロファイル直下。末尾の要素が現在いるフォルダーのid。無限階層に対応するためスタックで管理する
   @State private var folderStack: [UUID] = []
 
@@ -41,18 +45,28 @@ struct PanelView: View {
   }
 
   var body: some View {
-    VStack(spacing: 0) {
-      panelHeader
+    HStack(spacing: 0) {
+      if isSidebarVisible {
+        panelSidebar
+          .transition(.move(edge: .leading).combined(with: .opacity))
+      } else {
+        collapsedSidebarRail
+          .transition(.move(edge: .leading).combined(with: .opacity))
+      }
 
-      GeometryReader { proxy in
-        ScrollView {
-          gridBody(availableSize: proxy.size)
+      ZStack {
+        GamingPalette.background.opacity(0.72)
+
+        GeometryReader { proxy in
+          ScrollView([.horizontal, .vertical], showsIndicators: false) {
+            gridBody(availableSize: proxy.size)
+          }
         }
       }
     }
     .background(GamingPalette.background.opacity(0.45))
     .sheet(item: $editingButton) { button in
-      ButtonEditView(button: button) { updated in
+      ButtonEditView(button: button, connectionManager: connectionManager) { updated in
         profileStore.updateButton(updated)
       }
     }
@@ -65,7 +79,8 @@ struct PanelView: View {
           iconName: "square.grid.2x2",
           action: ActionPayload(type: .launchApp, target: ""),
           folderId: folderStack.last
-        )
+        ),
+        connectionManager: connectionManager
       ) { created in
         profileStore.addButton(created)
       }
@@ -88,9 +103,24 @@ struct PanelView: View {
         buttonPendingDeletion = nil
       }
     }
+    .alert("プロファイルが切り替わりました", isPresented: Binding(
+      get: { profileChangeNotice != nil },
+      set: { if !$0 { profileChangeNotice = nil } }
+    )) {
+      Button("OK", role: .cancel) { profileChangeNotice = nil }
+    } message: {
+      Text(profileChangeNotice ?? "")
+    }
     .onAppear {
       connectionManager.onProfileSync = { profiles, activeProfileId in
+        let previousActiveId = profileStore.activeProfileId
+        let previousActiveName = profileStore.activeProfile.name
         profileStore.applySync(profiles: profiles, activeProfileId: activeProfileId)
+        if previousActiveId != activeProfileId,
+           !profiles.contains(where: { $0.id == previousActiveId }),
+           let newProfile = profiles.first(where: { $0.id == activeProfileId }) {
+          profileChangeNotice = "Mac側で使用中だった「\(previousActiveName)」が削除されたため、「\(newProfile.name)」に切り替えました。"
+        }
         // プロファイルが切り替わった場合に前のプロファイルのフォルダー階層に居続けないようリセットする
         folderStack = []
       }
@@ -100,24 +130,92 @@ struct PanelView: View {
     }
   }
 
-  private var panelHeader: some View {
-    HStack(spacing: 12) {
-      profileMenu
-      breadcrumb
-      Spacer()
-      if isEditMode {
-        Label("ボタンをタップして編集。＋で追加", systemImage: "info.circle")
-          .font(.caption)
-          .foregroundStyle(GamingPalette.mutedForeground)
+  private var panelSidebar: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(spacing: 8) {
+        Label("パネル", systemImage: "square.grid.3x3.fill")
+          .font(.headline.weight(.semibold))
+          .foregroundStyle(GamingPalette.foreground)
+          .symbolRenderingMode(.hierarchical)
+
+        Spacer(minLength: 0)
+
+        sidebarToggleButton
       }
+
+      profileMenu
+
+      folderNavigator
+        .frame(maxHeight: .infinity, alignment: .top)
+
+      if isEditMode {
+        Label("タップで編集\nドラッグで移動・＋で追加", systemImage: "pencil.and.list.clipboard")
+          .font(.caption.weight(.medium))
+          .foregroundStyle(GamingPalette.mutedForeground)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(10)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background(
+            themeStore.accentColor.opacity(0.1),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+          )
+      }
+
+      editModeButton
+      settingsButton
     }
-    .padding(.horizontal, 20)
-    .padding(.vertical, 8)
+    .padding(14)
+    .frame(width: 240)
     .background(.ultraThinMaterial)
-    .overlay(alignment: .bottom) {
+    .background(GamingPalette.card.opacity(0.7))
+    .overlay(alignment: .trailing) {
       Rectangle()
-        .fill(themeStore.accentColor.opacity(isEditMode ? 0.75 : 0.28))
-        .frame(height: 1)
+        .fill(themeStore.accentColor.opacity(isEditMode ? 0.7 : 0.24))
+        .frame(width: 1)
+    }
+  }
+
+  private var collapsedSidebarRail: some View {
+    VStack {
+      sidebarToggleButton
+      Spacer()
+    }
+    .padding(.vertical, 8)
+    .frame(width: 56)
+    .background(.ultraThinMaterial)
+    .background(GamingPalette.card.opacity(0.7))
+    .overlay(alignment: .trailing) {
+      Rectangle()
+        .fill(themeStore.accentColor.opacity(0.24))
+        .frame(width: 1)
+    }
+  }
+
+  private var sidebarToggleButton: some View {
+    Button {
+      toggleSidebar()
+    } label: {
+      Image(systemName: "sidebar.left")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(themeStore.accentColor)
+        .frame(width: 44, height: 44)
+        .background(
+          GamingPalette.muted.opacity(0.58),
+          in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+    .buttonStyle(PanelToolbarButtonStyle())
+    .accessibilityLabel(isSidebarVisible ? "サイドバーを非表示" : "サイドバーを表示")
+  }
+
+  private func toggleSidebar() {
+    if reduceMotion {
+      isSidebarVisible.toggle()
+    } else {
+      withAnimation(.easeOut(duration: 0.2)) {
+        isSidebarVisible.toggle()
+      }
     }
   }
 
@@ -136,43 +234,174 @@ struct PanelView: View {
           }
         }
       }
+      Divider()
+      Label("新規作成・編集はMacで管理", systemImage: "desktopcomputer")
     } label: {
-      HStack(spacing: 6) {
-        Text(profileStore.activeProfile.name)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(GamingPalette.foreground)
+      HStack(spacing: 9) {
+        Image(systemName: "square.grid.3x3.fill")
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(themeStore.accentColor)
+
+        VStack(alignment: .leading, spacing: 1) {
+          Text("プロファイル")
+            .font(.caption2)
+            .foregroundStyle(GamingPalette.mutedForeground)
+          Text(profileStore.activeProfile.name)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(GamingPalette.foreground)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .minimumScaleFactor(0.82)
+        }
+
+        Spacer(minLength: 4)
+
         Image(systemName: "chevron.down")
           .font(.caption2.weight(.bold))
           .foregroundStyle(themeStore.accentColor)
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .gamingCard(accentColor: themeStore.accentColor, cornerRadius: 10)
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, minHeight: 54, maxHeight: 54)
+      .background(
+        GamingPalette.card.opacity(0.78),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(themeStore.accentColor.opacity(0.34), lineWidth: 1)
+      }
     }
+    .buttonStyle(PanelToolbarButtonStyle())
     .accessibilityLabel("プロファイルを切り替える")
+    .accessibilityValue(profileStore.activeProfile.name)
   }
 
-  private var breadcrumb: some View {
-    HStack(spacing: 5) {
-      Button {
-        folderStack = []
-      } label: {
-        Label("ホーム", systemImage: "square.grid.3x3")
-      }
-      .disabled(folderStack.isEmpty)
+  private var folderNavigator: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("場所")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(GamingPalette.mutedForeground)
+        .padding(.horizontal, 4)
 
-      ForEach(Array(folderPath.enumerated()), id: \.offset) { index, folder in
-        Image(systemName: "chevron.right")
-          .font(.caption2)
-          .foregroundStyle(GamingPalette.mutedForeground)
-        Button(folder.name) {
-          folderStack = Array(folderStack.prefix(index + 1))
+      ScrollView(.vertical, showsIndicators: false) {
+        VStack(spacing: 4) {
+          folderRow(
+            title: "ホーム",
+            systemImage: "house",
+            isCurrent: folderStack.isEmpty,
+            indentation: 0
+          ) {
+            folderStack = []
+          }
+
+          ForEach(Array(folderPath.enumerated()), id: \.offset) { index, folder in
+            folderRow(
+              title: folder.name,
+              systemImage: "folder",
+              isCurrent: index == folderPath.count - 1,
+              indentation: CGFloat(min(index + 1, 4)) * 8
+            ) {
+              folderStack = Array(folderStack.prefix(index + 1))
+            }
+          }
         }
-        .disabled(index == folderPath.count - 1)
       }
     }
-    .font(.caption.weight(.medium))
-    .foregroundStyle(themeStore.accentColor)
+  }
+
+  private func folderRow(
+    title: String,
+    systemImage: String,
+    isCurrent: Bool,
+    indentation: CGFloat,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 9) {
+        Image(systemName: systemImage)
+          .font(.system(size: 13, weight: .semibold))
+          .frame(width: 18)
+
+        Text(title)
+          .font(.subheadline.weight(isCurrent ? .semibold : .regular))
+          .lineLimit(1)
+          .truncationMode(.middle)
+
+        Spacer(minLength: 4)
+
+        if isCurrent {
+          Image(systemName: "checkmark")
+            .font(.caption.weight(.bold))
+        }
+      }
+      .foregroundStyle(isCurrent ? themeStore.accentColor : GamingPalette.mutedForeground)
+      .padding(.leading, 10 + indentation)
+      .padding(.trailing, 10)
+      .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+      .background(
+        isCurrent ? themeStore.accentColor.opacity(0.13) : Color.clear,
+        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+      )
+      .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+    .buttonStyle(PanelToolbarButtonStyle())
+    .disabled(isCurrent)
+  }
+
+  private var editModeButton: some View {
+    Button {
+      withAnimation(.easeOut(duration: 0.18)) {
+        isEditMode.toggle()
+      }
+    } label: {
+      HStack(spacing: 9) {
+        Image(systemName: isEditMode ? "checkmark" : "pencil")
+          .font(.system(size: 15, weight: .semibold))
+
+        Text(isEditMode ? "編集を完了" : "パネルを編集")
+          .font(.subheadline.weight(.semibold))
+          .lineLimit(1)
+
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(isEditMode ? Color.white : GamingPalette.foreground)
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .background(
+        isEditMode ? themeStore.accentColor : GamingPalette.muted.opacity(0.75),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(themeStore.accentColor.opacity(isEditMode ? 0.9 : 0.28), lineWidth: 1)
+      }
+    }
+    .buttonStyle(PanelToolbarButtonStyle())
+    .accessibilityValue(isEditMode ? "編集中" : "")
+  }
+
+  private var settingsButton: some View {
+    Button {
+      onOpenSettings()
+    } label: {
+      HStack(spacing: 9) {
+        Image(systemName: "gearshape")
+          .font(.system(size: 15, weight: .semibold))
+
+        Text("設定")
+          .font(.subheadline.weight(.semibold))
+
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(GamingPalette.foreground)
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, minHeight: 44)
+      .background(
+        GamingPalette.muted.opacity(0.58),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+    }
+    .buttonStyle(PanelToolbarButtonStyle())
   }
 
   /// 行数・列数と使える表示領域から、隙間が大きくなりすぎない正方形ボタンの一辺のサイズを求める。
@@ -186,7 +415,7 @@ struct PanelView: View {
     let widthPerCell = (availableWidth - Self.gridSpacing * CGFloat(columns - 1)) / CGFloat(columns)
     let heightPerCell = (availableHeight - Self.gridSpacing * CGFloat(rows - 1)) / CGFloat(rows)
 
-    return max(min(widthPerCell, heightPerCell), Self.minimumCellSize)
+    return min(max(min(widthPerCell, heightPerCell), Self.minimumCellSize), 148)
   }
 
   private func gridBody(availableSize: CGSize) -> some View {
@@ -203,7 +432,11 @@ struct PanelView: View {
       }
     }
     .padding(Self.gridPadding)
-    .frame(maxWidth: .infinity)
+    .frame(
+      minWidth: availableSize.width,
+      minHeight: availableSize.height,
+      alignment: .top
+    )
     // 行数・列数が変わった際にLazyVGridが古いセルサイズのレイアウトを使い回してしまうことがあるため、
     // グリッドの形が変わるたびに別のビューとして扱われるよう明示的にidを与え、必ず作り直させる
     .id("\(rows)x\(gridColumns)")
@@ -211,41 +444,49 @@ struct PanelView: View {
 
   @ViewBuilder
   private func gridCell(row: Int, col: Int, size: CGFloat) -> some View {
-    if let button = visibleButtons.first(where: { $0.row == row && $0.col == col }) {
-      buttonCell(button, size: size)
-    } else if isEditMode {
-      addCell(row: row, col: col, size: size)
-    } else {
-      Color.clear.frame(width: size, height: size)
+    Group {
+      if let button = visibleButtons.first(where: { $0.row == row && $0.col == col }) {
+        buttonCell(button, size: size)
+      } else if isEditMode {
+        addCell(row: row, col: col, size: size)
+      } else {
+        Color.clear.frame(width: size, height: size)
+      }
     }
+    // 編集モード中のみ、他のボタンをこのマスへドラッグ&ドロップして移動できるようにする
+    .dropDestination(for: String.self) { items, _ in
+      guard isEditMode, let draggedIdString = items.first else { return false }
+      moveButton(withIdString: draggedIdString, toRow: row, col: col)
+      return true
+    }
+  }
+
+  /// ドラッグされたボタンを指定マスへ移動する。移動先に既にボタンがある場合は元の位置と入れ替える
+  private func moveButton(withIdString draggedIdString: String, toRow row: Int, col: Int) {
+    guard let draggedId = UUID(uuidString: draggedIdString),
+          let draggedButton = visibleButtons.first(where: { $0.id == draggedId }),
+          draggedButton.row != row || draggedButton.col != col
+    else { return }
+
+    if let targetButton = visibleButtons.first(where: { $0.row == row && $0.col == col }) {
+      var swappedTarget = targetButton
+      swappedTarget.row = draggedButton.row
+      swappedTarget.col = draggedButton.col
+      profileStore.updateButton(swappedTarget)
+    }
+
+    var movedButton = draggedButton
+    movedButton.row = row
+    movedButton.col = col
+    profileStore.updateButton(movedButton)
   }
 
   @ViewBuilder
   private func buttonCell(_ button: ButtonConfig, size: CGFloat) -> some View {
     ZStack(alignment: .topTrailing) {
-      Button {
-        if isEditMode {
-          editingButton = button
-        } else if button.action.type == .openFolder {
-          folderStack.append(button.id)
-        } else {
-          connectionManager.execute(button.action)
-        }
-      } label: {
-        VStack(spacing: Self.iconLabelSpacing(for: size)) {
-          panelIcon(for: button, size: size)
-          Text(button.label)
-            .font(.system(size: Self.labelFontSize(for: size), weight: .semibold))
-            .foregroundStyle(GamingPalette.foreground)
-            .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
-        }
-        .frame(width: size, height: size)
-        .streamDeckGlassTile(
-          accentColor: themeStore.accentColor,
-          isEditing: isEditMode
-        )
-      }
-      .buttonStyle(PanelTileButtonStyle())
+      // .draggableはこのボタン単体にのみ付与する。ZStack全体に付与すると、上に重なる
+      // 削除ボタンのタップまでドラッグの当たり判定に飲み込まれてしまうため
+      contentButton(button, size: size)
 
       if isEditMode {
         Button {
@@ -255,7 +496,10 @@ struct PanelView: View {
             .symbolRenderingMode(.palette)
             .foregroundStyle(.white, GamingPalette.destructive)
         }
+        .frame(width: 44, height: 44)
+        .contentShape(Rectangle())
         .offset(x: 6, y: -6)
+        .accessibilityLabel("\(button.label)を削除")
       }
 
       if !isEditMode, button.action.type == .openFolder {
@@ -270,10 +514,45 @@ struct PanelView: View {
   }
 
   @ViewBuilder
+  private func contentButton(_ button: ButtonConfig, size: CGFloat) -> some View {
+    let core = Button {
+      if isEditMode {
+        editingButton = button
+      } else if button.action.type == .openFolder {
+        folderStack.append(button.id)
+      } else {
+        connectionManager.execute(button.action)
+      }
+    } label: {
+      VStack(spacing: Self.iconLabelSpacing(for: size)) {
+        panelIcon(for: button, size: size)
+        Text(button.label)
+          .font(.system(size: Self.labelFontSize(for: size), weight: .semibold))
+          .foregroundStyle(GamingPalette.foreground)
+          .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+      }
+      .frame(width: size, height: size)
+      .streamDeckGlassTile(
+        accentColor: themeStore.accentColor,
+        isEditing: isEditMode
+      )
+    }
+    .buttonStyle(PanelTileButtonStyle())
+
+    // 通常モードでの長押し（編集モードへの切替）とドラッグ操作が競合しないよう、
+    // ドラッグでの移動は編集モード中のみ有効にする
+    if isEditMode {
+      core.draggable(button.id.uuidString)
+    } else {
+      core
+    }
+  }
+
+  @ViewBuilder
   private func panelIcon(for button: ButtonConfig, size: CGFloat) -> some View {
     let iconSize = Self.iconSize(for: size)
 
-    if button.action.type == .launchApp,
+    if button.action.type == .launchApp || button.action.type == .openURL,
        let iconData = button.applicationIconPNGData,
        let icon = UIImage(data: iconData) {
       Image(uiImage: icon)
@@ -326,6 +605,16 @@ struct PanelView: View {
         )
     }
     .buttonStyle(.plain)
+    .accessibilityLabel("ボタンを追加")
+  }
+}
+
+private struct PanelToolbarButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .scaleEffect(configuration.isPressed ? 0.97 : 1)
+      .opacity(configuration.isPressed ? 0.84 : 1)
+      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
   }
 }
 
@@ -438,6 +727,6 @@ private struct GridPosition: Identifiable {
 }
 
 #Preview {
-  PanelView(connectionManager: ConnectionManager(), isEditMode: .constant(false))
+  PanelView(connectionManager: ConnectionManager(), isEditMode: .constant(false), onOpenSettings: {})
     .environment(ThemeStore())
 }

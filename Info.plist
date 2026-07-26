@@ -8,5 +8,7 @@
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>同一Wi-Fi上のMacを自動検出し、コントロールパッドとして接続するために使用します。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Macに表示されたペアリング用QRコードを読み取り、接続するために使用します。</string>
 </dict>
 </plist>

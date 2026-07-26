@@ -7,17 +7,19 @@
 
 import SwiftUI
 import PhotosUI
+import UIKit
 
-private let commonSFSymbols = [
-  "globe", "safari", "link", "doc.on.doc", "clipboard", "terminal", "folder",
-  "message", "envelope", "music.note", "play.fill", "speaker.wave.2",
-  "text.cursor", "keyboard", "gearshape", "star", "bolt", "square.grid.2x2"
-]
+/// クイック選択できるSF Symbolsの一覧。ここに無いものは下の直接入力欄で指定する。
+/// カテゴリーごとにまとめ、よく使うボタンの用途を一通りタップだけで選べるようにしている
+private let commonSFSymbols = EditorIconCatalog.commonSFSymbols
 
 private let modifierKeys = ["cmd", "shift", "opt", "ctrl"]
 
 private enum ButtonEditStep {
   case action
+  /// アクションを選んだ直後に表示する、そのアクション専用の入力画面
+  /// （選択画面とURL入力等を同じ画面に詰め込むと見落とされやすいため分離している）
+  case parameters
   case appearance
 }
 
@@ -82,7 +84,8 @@ private let actionChoiceGroups = [
       ActionChoice(type: .mediaKey, mediaKey: "brightnessUp", title: "画面を明るく", description: "1段階、画面の明るさを上げます", systemImage: "sun.max"),
       ActionChoice(type: .mediaKey, mediaKey: "brightnessDown", title: "画面を暗く", description: "1段階、画面の明るさを下げます", systemImage: "sun.min"),
       ActionChoice(type: .mediaKey, mediaKey: "keyboardBacklightUp", title: "キーボードを明るく", description: "キーボードバックライトを明るくします", systemImage: "keyboard.badge.ellipsis"),
-      ActionChoice(type: .mediaKey, mediaKey: "keyboardBacklightDown", title: "キーボードを暗く", description: "キーボードバックライトを暗くします", systemImage: "keyboard")
+      ActionChoice(type: .mediaKey, mediaKey: "keyboardBacklightDown", title: "キーボードを暗く", description: "キーボードバックライトを暗くします", systemImage: "keyboard"),
+      ActionChoice(type: .mediaKey, mediaKey: "micMute", title: "マイクをミュート", description: "システム全体でマイクの入力をミュート/解除します（どのアプリ使用中でも効きます）", systemImage: "mic.slash")
     ]
   ),
   ActionChoiceGroup(
@@ -141,27 +144,41 @@ struct ButtonEditView: View {
   @State private var editStep: ButtonEditStep = .action
   @State private var selectedPhotoItem: PhotosPickerItem?
   @State private var photoLoadErrorMessage: String?
+  @State private var isRecordingHotkey = false
+  @State private var hotkeyRecordingKeys: [String] = []
+  @State private var hotkeyRecordingGeneration = 0
+  @State private var automaticallyNamesApplicationButton: Bool
+  /// アイコンを未カスタマイズ（新規ボタンの初期値のまま）の間だけ、選んだアクションに合わせてアイコンを自動で変える
+  @State private var automaticallyPicksIcon: Bool
+  @State private var isShowingApplicationPicker = false
+  @State private var availableApplications: [MacApplicationInfo] = []
+  @State private var isLoadingApplications = false
 
+  let connectionManager: ConnectionManager
   let onSave: (ButtonConfig) -> Void
 
-  init(button: ButtonConfig, onSave: @escaping (ButtonConfig) -> Void) {
+  init(button: ButtonConfig, connectionManager: ConnectionManager, onSave: @escaping (ButtonConfig) -> Void) {
     _draft = State(initialValue: button)
+    _automaticallyNamesApplicationButton = State(
+      initialValue: button.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || button.label == "新しいボタン"
+    )
+    _automaticallyPicksIcon = State(
+      initialValue: button.iconKind == .sfSymbol
+        && (button.iconName.isEmpty || button.iconName == "square.grid.2x2")
+    )
     self.onSave = onSave
+    self.connectionManager = connectionManager
   }
 
   var body: some View {
     NavigationStack {
       Form {
-        if editStep == .action {
+        switch editStep {
+        case .action:
           actionSelectionSections
-          Section {
-            actionParameterFields
-          } header: {
-            Text("アクションの設定")
-              .foregroundStyle(GamingPalette.mutedForeground)
-          }
-          .listRowBackground(GamingPalette.card.opacity(0.6))
-        } else {
+
+        case .parameters:
           Section {
             Label(selectedActionTitle, systemImage: selectedActionImage)
               .foregroundStyle(GamingPalette.foreground)
@@ -172,7 +189,21 @@ struct ButtonEditView: View {
           .listRowBackground(GamingPalette.card.opacity(0.6))
 
           Section {
-            TextField("ラベル", text: $draft.label)
+            actionParameterFields
+          } header: {
+            Text(parameterSectionTitle)
+              .foregroundStyle(GamingPalette.mutedForeground)
+          } footer: {
+            if let parameterSectionFooter {
+              Text(parameterSectionFooter)
+                .foregroundStyle(GamingPalette.mutedForeground)
+            }
+          }
+          .listRowBackground(GamingPalette.card.opacity(0.6))
+
+        case .appearance:
+          Section {
+            TextField("ラベル", text: labelBinding)
               .foregroundStyle(GamingPalette.foreground)
             iconPicker
           } header: {
@@ -192,31 +223,67 @@ struct ButtonEditView: View {
         .ignoresSafeArea()
       )
       .tint(themeStore.accentColor)
-      .navigationTitle(editStep == .action ? "アクションを選択" : "表示を設定")
+      .navigationTitle(navigationTitleText)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
           Button(editStep == .action ? "キャンセル" : "戻る") {
-            if editStep == .action {
+            switch editStep {
+            case .action:
               dismiss()
-            } else {
+            case .parameters:
               editStep = .action
+            case .appearance:
+              editStep = .parameters
             }
           }
             .foregroundStyle(GamingPalette.mutedForeground)
         }
-        ToolbarItem(placement: .confirmationAction) {
-          Button(editStep == .action ? "次へ" : "保存") {
-            if editStep == .action {
-              editStep = .appearance
-            } else {
-              onSave(draft)
-              dismiss()
+        if editStep != .action {
+          ToolbarItem(placement: .confirmationAction) {
+            Button(editStep == .parameters ? "次へ" : "保存") {
+              if editStep == .parameters {
+                prepareAppearance()
+                editStep = .appearance
+              } else {
+                onSave(draft)
+                dismiss()
+              }
             }
+            .foregroundStyle(themeStore.accentColor)
           }
-          .foregroundStyle(themeStore.accentColor)
         }
       }
+    }
+    .overlay(alignment: .topLeading) {
+      // FormのUICollectionView配下に置くと、方向キーがフォーカス移動として先に処理される。
+      // キャプチャ用responderはFormの外側に置き、UIKeyCommandでも方向キーを明示的に奪う。
+      HotkeyHardwareKeyCapture(
+        isActive: $isRecordingHotkey,
+        onKeyPress: handleHardwareKeyPress,
+        onDirectionalKeyPress: handleHardwareDirectionalKeyPress
+      )
+      .frame(width: 1, height: 1)
+      .accessibilityHidden(true)
+    }
+    .sheet(isPresented: $isShowingApplicationPicker) {
+      MacApplicationPicker(applications: availableApplications, isLoading: isLoadingApplications) { application in
+        draft.action.target = application.bundleIdentifier
+        draft.applicationIconPNGData = application.iconPNGData
+        draft.iconKind = .sfSymbol
+        draft.iconName = "macwindow"
+        draft.label = application.name
+        automaticallyNamesApplicationButton = true
+        isShowingApplicationPicker = false
+      }
+    }
+  }
+
+  private var navigationTitleText: String {
+    switch editStep {
+    case .action: return "アクションを選択"
+    case .parameters: return selectedActionTitle
+    case .appearance: return "表示を設定"
     }
   }
 
@@ -282,6 +349,17 @@ struct ButtonEditView: View {
     if choice.type == .windowLayout, draft.action.preset == nil {
       draft.action.preset = WindowLayoutPreset.leftHalf.rawValue
     }
+    if choice.type == .launchApp {
+      automaticallyNamesApplicationButton = true
+    }
+    if automaticallyPicksIcon, draft.iconKind == .sfSymbol {
+      draft.iconName = choice.systemImage
+    }
+    // 選択直後にそのアクション専用の入力画面へ進む（選択画面に埋もれてURL入力欄などが
+    // 見落とされないようにするため）
+    withAnimation(.easeOut(duration: 0.18)) {
+      editStep = .parameters
+    }
   }
 
   // MARK: - アイコン選択
@@ -303,28 +381,19 @@ struct ButtonEditView: View {
         .foregroundStyle(themeStore.accentColor)
       }
 
-      LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 8) {
-        ForEach(commonSFSymbols, id: \.self) { symbol in
-          let isSelected = draft.iconKind == .sfSymbol && draft.iconName == symbol
-          Image(systemName: symbol)
-            .font(.system(size: 20))
-            .foregroundStyle(isSelected ? themeStore.accentColor : GamingPalette.mutedForeground)
-            .frame(width: 36, height: 36)
-            .background(
-              isSelected ? themeStore.accentColor.opacity(0.3) : GamingPalette.muted.opacity(0.5),
-              in: RoundedRectangle(cornerRadius: 8)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 8)
-                .stroke(isSelected ? themeStore.accentColor.opacity(0.9) : Color.clear, lineWidth: 1.2)
-            )
-            .onTapGesture {
-              draft.iconKind = .sfSymbol
-              draft.iconName = symbol
-            }
-        }
+      if !recommendedSFSymbols.isEmpty {
+        Text("このアクションのおすすめ")
+          .font(.caption2)
+          .foregroundStyle(GamingPalette.mutedForeground)
+        iconGrid(recommendedSFSymbols)
       }
-      TextField("SF Symbol名を直接入力", text: $draft.iconName)
+
+      Text("すべてのアイコン")
+        .font(.caption2)
+        .foregroundStyle(GamingPalette.mutedForeground)
+      iconGrid(commonSFSymbols)
+
+      TextField("SF Symbol名を直接入力", text: iconNameBinding)
         .font(.caption)
         .foregroundStyle(GamingPalette.foreground)
 
@@ -337,6 +406,118 @@ struct ButtonEditView: View {
     .onChange(of: selectedPhotoItem) { _, newItem in
       guard let newItem else { return }
       Task { await loadSelectedPhoto(newItem) }
+    }
+  }
+
+  private func iconGrid(_ symbols: [String]) -> some View {
+    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 6), spacing: 8) {
+      ForEach(symbols, id: \.self) { symbol in
+        iconTile(symbol)
+      }
+    }
+  }
+
+  private func iconTile(_ symbol: String) -> some View {
+    let isSelected = draft.iconKind == .sfSymbol && draft.iconName == symbol
+    return Image(systemName: symbol)
+      .font(.system(size: 20))
+      .foregroundStyle(isSelected ? themeStore.accentColor : GamingPalette.mutedForeground)
+      .frame(width: 36, height: 36)
+      .background(
+        isSelected ? themeStore.accentColor.opacity(0.3) : GamingPalette.muted.opacity(0.5),
+        in: RoundedRectangle(cornerRadius: 8)
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 8)
+          .stroke(isSelected ? themeStore.accentColor.opacity(0.9) : Color.clear, lineWidth: 1.2)
+      )
+      .onTapGesture {
+        draft.iconKind = .sfSymbol
+        draft.iconName = symbol
+        automaticallyPicksIcon = false
+      }
+  }
+
+  private var iconNameBinding: Binding<String> {
+    Binding(
+      get: { draft.iconName },
+      set: {
+        draft.iconName = $0
+        automaticallyPicksIcon = false
+      }
+    )
+  }
+
+  /// 選んでいるアクションの機能に合ったアイコン候補。アクションの種類ごとに、
+  /// その機能を連想しやすいSF Symbolsだけを絞り込んで表示する
+  private var recommendedSFSymbols: [String] {
+    var candidates: [String] = []
+    if let choiceImage = selectedActionChoice?.systemImage {
+      candidates.append(choiceImage)
+    }
+    candidates.append(contentsOf: additionalRecommendedSFSymbols)
+
+    var seen = Set<String>()
+    return candidates.filter { seen.insert($0).inserted }
+  }
+
+  private var additionalRecommendedSFSymbols: [String] {
+    switch draft.action.type {
+    case .launchApp, .activateApplication:
+      return ["macwindow", "app.fill", "desktopcomputer", "laptopcomputer", "bolt.fill"]
+    case .quitApplication:
+      return ["xmark.app", "power", "xmark.circle.fill"]
+    case .openURL:
+      return ["globe", "safari", "link", "network"]
+    case .hotkey:
+      return ["keyboard", "command"]
+    case .typeText:
+      return ["text.cursor", "textformat", "pencil"]
+    case .openFinderFolder:
+      return ["folder.fill", "folder", "tray.full"]
+    case .openFolder:
+      return ["folder.fill", "square.grid.2x2", "list.bullet"]
+    case .setVolume:
+      return ["speaker.wave.2", "speaker.wave.3", "speaker.wave.1"]
+    case .multiAction:
+      return ["list.number", "list.bullet", "square.stack"]
+    case .windowLayout:
+      return ["rectangle.split.2x1", "macwindow"]
+    case .delay:
+      return ["clock", "hourglass", "timer"]
+    case .activateTab, .closeTab:
+      return ["link", "xmark"]
+    case .mediaKey:
+      return recommendedMediaKeySymbols
+    case .systemAction:
+      return recommendedSystemActionSymbols
+    }
+  }
+
+  private var recommendedMediaKeySymbols: [String] {
+    switch draft.action.mediaKey {
+    case "volumeUp": return ["speaker.wave.3", "speaker.wave.2"]
+    case "volumeDown": return ["speaker.wave.1", "speaker.wave.2"]
+    case "mute": return ["speaker.slash", "speaker.wave.2"]
+    case "brightnessUp": return ["sun.max", "sun.max.fill"]
+    case "brightnessDown": return ["sun.min"]
+    case "keyboardBacklightUp", "keyboardBacklightDown": return ["keyboard", "keyboard.badge.ellipsis"]
+    case "micMute": return ["mic.slash", "mic", "mic.fill"]
+    case "playPause": return ["playpause.fill", "play.fill", "pause.fill"]
+    case "nextTrack": return ["forward.end.fill", "forward.fill"]
+    case "previousTrack": return ["backward.end.fill", "backward.fill"]
+    default: return ["speaker.wave.2"]
+    }
+  }
+
+  private var recommendedSystemActionSymbols: [String] {
+    switch draft.action.systemAction {
+    case "sleep": return ["moon.fill", "moon"]
+    case "lockScreen": return ["lock.fill", "lock"]
+    case "screenSaver": return ["sparkles"]
+    case "screenshotFull": return ["camera.viewfinder", "camera.fill"]
+    case "screenshotSelection": return ["crop", "camera.viewfinder"]
+    default: return ["power"]
     }
   }
 
@@ -373,14 +554,52 @@ struct ButtonEditView: View {
 
   // MARK: - アクション種別ごとの入力欄
 
+  /// 「アクションの設定」セクションの見出し。何を入力すればいいかが一目でわかるよう、種別ごとに変える
+  private var parameterSectionTitle: String {
+    switch draft.action.type {
+    case .launchApp, .activateApplication, .quitApplication: return "対象のアプリ"
+    case .openURL: return "開くURL"
+    case .openFinderFolder: return "対象のフォルダ"
+    case .hotkey: return "送信するキー"
+    case .typeText: return "入力するテキスト"
+    case .setVolume: return "音量"
+    case .delay: return "待機時間"
+    case .windowLayout: return "配置プリセット"
+    case .multiAction: return "実行するステップ"
+    case .openFolder, .activateTab, .closeTab, .mediaKey, .systemAction: return "アクションの設定"
+    }
+  }
+
+  /// 入力例や補足の説明。入力形式が分かりにくいものにのみ表示する
+  private var parameterSectionFooter: String? {
+    switch draft.action.type {
+    case .launchApp, .activateApplication, .quitApplication:
+      return "アプリ名（例: Google Chrome）またはBundle ID（例: com.google.Chrome）を入力してください"
+    case .openURL:
+      return "例: https://www.google.com"
+    case .openFinderFolder:
+      return "Mac上の絶対パスを入力してください（例: /Users/name/Documents）"
+    default:
+      return nil
+    }
+  }
+
   @ViewBuilder
   private var actionParameterFields: some View {
     switch draft.action.type {
     case .launchApp:
-      TextField("アプリ名 または Bundle ID", text: targetBinding)
-        .foregroundStyle(GamingPalette.foreground)
+      VStack(alignment: .leading, spacing: 10) {
+        TextField("例: Google Chrome", text: targetBinding)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .foregroundStyle(GamingPalette.foreground)
+        appSelectionButton
+      }
     case .openURL:
-      TextField("URL", text: targetBinding)
+      TextField("https://example.com", text: targetBinding)
+        .keyboardType(.URL)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
         .foregroundStyle(GamingPalette.foreground)
     case .hotkey:
       hotkeyFields
@@ -406,8 +625,13 @@ struct ButtonEditView: View {
         .font(.caption)
         .foregroundStyle(GamingPalette.mutedForeground)
     case .activateApplication, .quitApplication:
-      TextField("アプリ名 または Bundle ID", text: targetBinding)
-        .foregroundStyle(GamingPalette.foreground)
+      VStack(alignment: .leading, spacing: 10) {
+        TextField("例: Google Chrome", text: targetBinding)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .foregroundStyle(GamingPalette.foreground)
+        appSelectionButton
+      }
     case .windowLayout:
       windowLayoutFields
     case .mediaKey, .systemAction:
@@ -415,8 +639,23 @@ struct ButtonEditView: View {
         .font(.caption)
         .foregroundStyle(GamingPalette.mutedForeground)
     case .openFinderFolder:
-      TextField("Mac上のフォルダのパス", text: targetBinding)
-        .foregroundStyle(GamingPalette.foreground)
+      VStack(alignment: .leading, spacing: 10) {
+        TextField("例: /Users/name/Documents", text: targetBinding)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled()
+          .foregroundStyle(GamingPalette.foreground)
+        Button {
+          connectionManager.requestFolderSelection { path in
+            guard let path else { return }
+            draft.action.target = path
+          }
+        } label: {
+          Label("Macでフォルダを選択…", systemImage: "folder.badge.gearshape")
+            .font(.subheadline.weight(.medium))
+        }
+        .buttonStyle(.bordered)
+        .tint(themeStore.accentColor)
+      }
     }
   }
 
@@ -429,6 +668,22 @@ struct ButtonEditView: View {
     .foregroundStyle(GamingPalette.foreground)
   }
 
+  private var appSelectionButton: some View {
+    Button {
+      isLoadingApplications = true
+      isShowingApplicationPicker = true
+      connectionManager.requestApplications { applications in
+        availableApplications = applications
+        isLoadingApplications = false
+      }
+    } label: {
+      Label("Macの起動中アプリから選択…", systemImage: "rectangle.3.group")
+        .font(.subheadline.weight(.medium))
+    }
+    .buttonStyle(.bordered)
+    .tint(themeStore.accentColor)
+  }
+
   private var presetBinding: Binding<String> {
     Binding(
       get: { draft.action.preset ?? WindowLayoutPreset.leftHalf.rawValue },
@@ -437,7 +692,40 @@ struct ButtonEditView: View {
   }
 
   private var hotkeyFields: some View {
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 10) {
+      Button {
+        isRecordingHotkey = true
+        hotkeyRecordingKeys = []
+        hotkeyRecordingGeneration += 1
+      } label: {
+        HStack(spacing: 10) {
+          Image(systemName: isRecordingHotkey ? "record.circle.fill" : "keyboard.badge.ellipsis")
+          VStack(alignment: .leading, spacing: 2) {
+            Text(isRecordingHotkey ? "登録するキーを押してください" : "実際のキー入力を記録")
+              .font(.body.weight(.semibold))
+            Text(isRecordingHotkey ? recordingHotkeyDescription : recordedHotkeyDescription)
+              .font(.caption)
+              .foregroundStyle(GamingPalette.mutedForeground)
+          }
+          Spacer()
+        }
+        .foregroundStyle(isRecordingHotkey ? GamingPalette.foreground : themeStore.accentColor)
+        .padding(12)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(isRecordingHotkey ? themeStore.accentColor.opacity(0.22) : GamingPalette.muted.opacity(0.45))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .stroke(themeStore.accentColor.opacity(isRecordingHotkey ? 0.9 : 0.35), lineWidth: 1)
+        )
+      }
+      .buttonStyle(.plain)
+
+      Text("修飾キー（任意）")
+        .font(.caption)
+        .foregroundStyle(GamingPalette.mutedForeground)
+
       HStack {
         ForEach(modifierKeys, id: \.self) { modifier in
           let isSelected = (draft.action.keys ?? []).contains(modifier)
@@ -458,8 +746,141 @@ struct ButtonEditView: View {
           )
         }
       }
-      TextField("キー（例: c）", text: keyBinding)
-        .foregroundStyle(GamingPalette.foreground)
+
+      Text("キー（タップして選択）")
+        .font(.caption)
+        .foregroundStyle(GamingPalette.mutedForeground)
+
+      // キー名を直接入力させると存在しないキー名を打ち込みやすく分かりにくいため、
+      // 実際のキーボード配列をそのままタップして選ばせることで登録ミスを防ぐ
+      VStack(spacing: 5) {
+        keyPickerRow(KeyboardView.numberRow)
+        keyPickerRow(KeyboardView.qwertyRow)
+        keyPickerRow(KeyboardView.homeRow)
+        keyPickerRow(KeyboardView.bottomLetterKeys)
+        keyPickerRow(KeyboardView.extraKeys)
+      }
+
+    }
+  }
+
+  private var recordedHotkeyDescription: String {
+    let keys = draft.action.keys ?? []
+    guard !keys.isEmpty else { return "押したキーの組み合わせをそのまま登録します" }
+    return "現在: " + keys.map(hotkeyDisplayName).joined(separator: " + ")
+  }
+
+  private var recordingHotkeyDescription: String {
+    guard !hotkeyRecordingKeys.isEmpty else { return "修飾キーと通常キーを同時に押します" }
+    return "検出中: " + hotkeyRecordingKeys.map(hotkeyDisplayName).joined(separator: " + ")
+  }
+
+  private func hotkeyDisplayName(_ key: String) -> String {
+    switch key {
+    case "cmd": return "⌘"
+    case "shift": return "⇧"
+    case "opt": return "⌥"
+    case "ctrl": return "⌃"
+    case "return": return "Return"
+    case "escape": return "Esc"
+    case "delete": return "Delete"
+    case "space": return "Space"
+    case "tab": return "Tab"
+    case "left": return "←"
+    case "right": return "→"
+    case "up": return "↑"
+    case "down": return "↓"
+    default: return key.uppercased()
+    }
+  }
+
+  /// ハードウェアキーボードで検出したキー（修飾キー＋通常キー1つ）を、現在記録中の組み合わせへ反映する。
+  /// 0.3秒キー入力が無ければ確定し、記録モードを終了する（複数キーを少しずつ押しても1つの組み合わせとして拾うため）
+  private func commitDetectedHotkey(modifiers: [String], key: String) {
+    guard isRecordingHotkey else { return }
+
+    let existingRegularKeys = hotkeyRecordingKeys.filter { !modifierKeys.contains($0) }
+    hotkeyRecordingKeys = modifiers + existingRegularKeys
+    if !hotkeyRecordingKeys.contains(key) {
+      hotkeyRecordingKeys.append(key)
+    }
+
+    hotkeyRecordingGeneration += 1
+    let generation = hotkeyRecordingGeneration
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+      guard generation == hotkeyRecordingGeneration, isRecordingHotkey else { return }
+      draft.action.keys = hotkeyRecordingKeys
+      isRecordingHotkey = false
+    }
+  }
+
+  /// `HotkeyHardwareKeyCapture`（UIKitの`pressesBegan`ベース）から呼ばれる、物理キー入力の受け口
+  private func handleHardwareKeyPress(modifiers: UIKeyModifierFlags, key: UIKey) {
+    guard isRecordingHotkey, let keyName = recordedKeyName(for: key) else { return }
+    commitDetectedHotkey(modifiers: modifierNames(from: modifiers), key: keyName)
+  }
+
+  /// UIKitが`pressesBegan`より先に解決する方向キーの`UIKeyCommand`からの受け口
+  private func handleHardwareDirectionalKeyPress(modifiers: UIKeyModifierFlags, key: String) {
+    guard isRecordingHotkey else { return }
+    commitDetectedHotkey(modifiers: modifierNames(from: modifiers), key: key)
+  }
+
+  private func modifierNames(from flags: UIKeyModifierFlags) -> [String] {
+    var modifiers: [String] = []
+    if flags.contains(.command) { modifiers.append("cmd") }
+    if flags.contains(.shift) { modifiers.append("shift") }
+    if flags.contains(.alternate) { modifiers.append("opt") }
+    if flags.contains(.control) { modifiers.append("ctrl") }
+    return modifiers
+  }
+
+  private func recordedKeyName(for uiKey: UIKey) -> String? {
+    switch uiKey.keyCode {
+    case .keyboardReturnOrEnter, .keypadEnter: return "return"
+    case .keyboardTab: return "tab"
+    case .keyboardSpacebar: return "space"
+    case .keyboardDeleteOrBackspace, .keyboardDeleteForward: return "delete"
+    case .keyboardEscape: return "escape"
+    case .keyboardLeftArrow: return "left"
+    case .keyboardRightArrow: return "right"
+    case .keyboardUpArrow: return "up"
+    case .keyboardDownArrow: return "down"
+    case .keyboardLeftGUI, .keyboardRightGUI,
+         .keyboardLeftShift, .keyboardRightShift,
+         .keyboardLeftAlt, .keyboardRightAlt,
+         .keyboardLeftControl, .keyboardRightControl:
+      // 修飾キー単体の押下は「メインキー」として扱わない。押されている修飾キー自体は
+      // 直後（または同時）に届くメインキーのUIPressのmodifierFlagsから拾うため、ここではnilを返す
+      return nil
+    default:
+      let character = uiKey.charactersIgnoringModifiers.lowercased()
+      guard !character.isEmpty else { return nil }
+      let supportedCharacters = "abcdefghijklmnopqrstuvwxyz0123456789-=[]\\;',./`"
+      return supportedCharacters.contains(character) ? character : nil
+    }
+  }
+
+  private func keyPickerRow(_ keys: [KeyDefinition]) -> some View {
+    HStack(spacing: 4) {
+      ForEach(keys) { key in
+        let isSelected = keyBinding.wrappedValue == key.keyName
+        Button {
+          keyBinding.wrappedValue = key.keyName
+        } label: {
+          Text(key.label)
+            .font(.caption2)
+            .foregroundStyle(isSelected ? Color.white : GamingPalette.foreground)
+            .frame(maxWidth: .infinity, minHeight: 30)
+        }
+        .buttonStyle(.plain)
+        .background(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(isSelected ? themeStore.accentColor : GamingPalette.muted.opacity(0.6))
+        )
+        .layoutPriority(key.widthWeight)
+        .frame(minWidth: 24 * key.widthWeight)
+      }
     }
   }
 
@@ -474,6 +895,41 @@ struct ButtonEditView: View {
   }
 
   // MARK: - Optionalフィールド用のBinding
+
+  private var labelBinding: Binding<String> {
+    Binding(
+      get: { draft.label },
+      set: {
+        draft.label = $0
+        automaticallyNamesApplicationButton = false
+      }
+    )
+  }
+
+  private func prepareAppearance() {
+    guard automaticallyNamesApplicationButton,
+          draft.action.type == .launchApp,
+          let target = draft.action.target,
+          let applicationName = applicationDisplayName(from: target) else { return }
+    draft.label = applicationName
+  }
+
+  private func applicationDisplayName(from target: String) -> String? {
+    let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+
+    let pathName = URL(fileURLWithPath: trimmed).deletingPathExtension().lastPathComponent
+    if trimmed.contains("/") {
+      return pathName
+    }
+    if trimmed.lowercased().hasSuffix(".app") {
+      return String(trimmed.dropLast(4))
+    }
+    if trimmed.contains("."), let bundleName = trimmed.split(separator: ".").last {
+      return String(bundleName)
+    }
+    return trimmed
+  }
 
   private var targetBinding: Binding<String> {
     Binding(get: { draft.action.target ?? "" }, set: { draft.action.target = $0 })
@@ -506,6 +962,165 @@ struct ButtonEditView: View {
       }
     )
   }
+}
+
+// MARK: - 実機キーボードでのホットキー記録（ハードウェアキー入力キャプチャ）
+
+/// ハードウェアキーボードの物理キー入力を直接検知するための橋渡し。
+/// Form内のフォーカス処理を避けるためNavigationStackのoverlayに置き、通常キーは`pressesBegan`、
+/// 方向キーは優先度付き`UIKeyCommand`で受け取る。
+private struct HotkeyHardwareKeyCapture: UIViewRepresentable {
+  @Binding var isActive: Bool
+  let onKeyPress: (UIKeyModifierFlags, UIKey) -> Void
+  let onDirectionalKeyPress: (UIKeyModifierFlags, String) -> Void
+
+  func makeUIView(context: Context) -> KeyCaptureUIView {
+    let view = KeyCaptureUIView()
+    view.onKeyPress = onKeyPress
+    view.onDirectionalKeyPress = onDirectionalKeyPress
+    view.backgroundColor = .clear
+    view.isAccessibilityElement = false
+    return view
+  }
+
+  func updateUIView(_ uiView: KeyCaptureUIView, context: Context) {
+    uiView.onKeyPress = onKeyPress
+    uiView.onDirectionalKeyPress = onDirectionalKeyPress
+    uiView.isCaptureActive = isActive
+  }
+}
+
+/// `pressesBegan`で物理キー入力を検知するだけの、見た目を持たない実体View
+private final class KeyCaptureUIView: UIView {
+  var onKeyPress: ((UIKeyModifierFlags, UIKey) -> Void)?
+  var onDirectionalKeyPress: ((UIKeyModifierFlags, String) -> Void)?
+
+  var isCaptureActive = false {
+    didSet {
+      guard isCaptureActive != oldValue else { return }
+      if isCaptureActive {
+        requestFirstResponder()
+      } else {
+        heldModifierFlags = []
+        if isFirstResponder { resignFirstResponder() }
+      }
+    }
+  }
+
+  /// 修飾キー単体の押下/解放を自前で追跡した「現在押されている修飾キー」の集合。
+  /// option+commandのように複数の修飾キーとメインキーがほぼ同時に押されると、OSが
+  /// それらを1回の`pressesBegan`呼び出しへまとめて渡してくることがあり、その際
+  /// メインキー側の`UIKey.modifierFlags`だけでは同じバッチ内の別の修飾キー分が
+  /// 反映されないことがある。そのため自前で保持している状態と合成して確実に拾う
+  private var heldModifierFlags: UIKeyModifierFlags = []
+
+  override var canBecomeFirstResponder: Bool { true }
+
+  /// 方向キーはForm/UICollectionViewのフォーカスエンジンが`pressesBegan`より前に解決する。
+  /// 全修飾キーの組み合わせを明示的に登録し、システム動作より優先させて記録へ渡す。
+  override var keyCommands: [UIKeyCommand]? {
+    isCaptureActive ? Self.directionalKeyCommands : nil
+  }
+
+  override func didMoveToWindow() {
+    super.didMoveToWindow()
+    if window != nil, isCaptureActive { requestFirstResponder() }
+  }
+
+  private func requestFirstResponder() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.isCaptureActive, self.window != nil, !self.isFirstResponder else { return }
+      self.becomeFirstResponder()
+    }
+  }
+
+  @objc private func captureDirectionalKeyCommand(_ command: UIKeyCommand) {
+    guard isCaptureActive, let input = command.input,
+          let key = Self.directionalKeyNames[input] else { return }
+    onDirectionalKeyPress?(command.modifierFlags, key)
+  }
+
+  override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    var handledAny = false
+
+    // 1st pass: このバッチに含まれる修飾キー自体の押下を先にすべて反映しておく
+    // （Setは順序不定のため、メインキー側の処理より先に全件を反映する必要がある）
+    for press in presses {
+      if let key = press.key, let flag = Self.modifierFlag(for: key.keyCode) {
+        heldModifierFlags.insert(flag)
+      }
+    }
+
+    // 2nd pass: イベント自身のmodifierFlagsと自前追跡分を合成して渡す
+    for press in presses {
+      if let key = press.key {
+        onKeyPress?(key.modifierFlags.union(heldModifierFlags), key)
+        handledAny = true
+      }
+    }
+
+    if !handledAny {
+      super.pressesBegan(presses, with: event)
+    }
+  }
+
+  override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    for press in presses {
+      if let key = press.key, let flag = Self.modifierFlag(for: key.keyCode) {
+        heldModifierFlags.remove(flag)
+      }
+    }
+    super.pressesEnded(presses, with: event)
+  }
+
+  override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+    for press in presses {
+      if let key = press.key, let flag = Self.modifierFlag(for: key.keyCode) {
+        heldModifierFlags.remove(flag)
+      }
+    }
+    super.pressesCancelled(presses, with: event)
+  }
+
+  /// 修飾キー単体のキーコードを対応する`UIKeyModifierFlags`のビットへ変換する
+  private static func modifierFlag(for keyCode: UIKeyboardHIDUsage) -> UIKeyModifierFlags? {
+    switch keyCode {
+    case .keyboardLeftGUI, .keyboardRightGUI: return .command
+    case .keyboardLeftShift, .keyboardRightShift: return .shift
+    case .keyboardLeftAlt, .keyboardRightAlt: return .alternate
+    case .keyboardLeftControl, .keyboardRightControl: return .control
+    default: return nil
+    }
+  }
+
+  private static let directionalKeyNames = [
+    UIKeyCommand.inputLeftArrow: "left",
+    UIKeyCommand.inputRightArrow: "right",
+    UIKeyCommand.inputUpArrow: "up",
+    UIKeyCommand.inputDownArrow: "down"
+  ]
+
+  private static let directionalKeyCommands: [UIKeyCommand] = {
+    let modifierFlags: [UIKeyModifierFlags] = [.command, .shift, .alternate, .control]
+    var combinations: [UIKeyModifierFlags] = [[]]
+    for flag in modifierFlags {
+      combinations += combinations.map { $0.union(flag) }
+    }
+
+    return directionalKeyNames.keys.flatMap { input in
+      combinations.map { modifiers in
+        let command = UIKeyCommand(
+          input: input,
+          modifierFlags: modifiers,
+          action: #selector(captureDirectionalKeyCommand(_:))
+        )
+        command.wantsPriorityOverSystemBehavior = true
+        command.allowsAutomaticLocalization = false
+        command.allowsAutomaticMirroring = false
+        return command
+      }
+    }
+  }()
 }
 
 // MARK: - マルチアクションのステップ編集
@@ -623,6 +1238,59 @@ private struct StepRow: View {
 }
 
 #Preview {
-  ButtonEditView(button: ButtonConfig(row: 0, col: 0, label: "Chrome", iconName: "globe", action: ActionPayload(type: .launchApp, target: "Google Chrome"))) { _ in }
+  ButtonEditView(button: ButtonConfig(row: 0, col: 0, label: "Chrome", iconName: "globe", action: ActionPayload(type: .launchApp, target: "Google Chrome")), connectionManager: ConnectionManager()) { _ in }
     .environment(ThemeStore())
+}
+
+private struct MacApplicationPicker: View {
+  let applications: [MacApplicationInfo]
+  let isLoading: Bool
+  let onSelect: (MacApplicationInfo) -> Void
+
+  @Environment(\.dismiss) private var dismiss
+
+  var body: some View {
+    NavigationStack {
+      Group {
+        if isLoading {
+          ProgressView("Macから取得中…")
+        } else if applications.isEmpty {
+          ContentUnavailableView("起動中のアプリがありません", systemImage: "macwindow")
+        } else {
+          List(applications) { application in
+            Button { onSelect(application) } label: {
+              HStack(spacing: 12) {
+                if let data = application.iconPNGData, let image = UIImage(data: data) {
+                  Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 34, height: 34)
+                } else {
+                  Image(systemName: "macwindow")
+                    .frame(width: 34, height: 34)
+                    .foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                  Text(application.name)
+                    .foregroundStyle(GamingPalette.foreground)
+                  Text(application.bundleIdentifier)
+                    .font(.caption)
+                    .foregroundStyle(GamingPalette.mutedForeground)
+                }
+                Spacer()
+                if application.active { Image(systemName: "circle.fill").font(.caption2).foregroundStyle(.green) }
+              }
+            }
+            .buttonStyle(.plain)
+          }
+        }
+      }
+      .navigationTitle("アプリを選択")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("キャンセル") { dismiss() }
+        }
+      }
+    }
+  }
 }

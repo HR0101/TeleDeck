@@ -24,6 +24,14 @@ final class ConnectionManager {
   }
 
   private(set) var state: ConnectionState = .disconnected
+  /// このセッション中に一度でもペアリングに成功したか。
+  /// Mac側アプリの再起動などで一瞬切断された際に、ペアリング画面へ引き戻さず
+  /// MainTabViewを維持したまま裏側で再接続できるようにするためのフラグ
+  private(set) var hasPairedBefore = false
+  /// PIN送信後のペアリング状態を保持する。瞬断しても入力欄を消さず、再接続後に自動再送する。
+  private(set) var isPairingInProgress = false
+  private(set) var isPairingReconnecting = false
+  private var pendingPairingPin: String?
 
   /// Macから最新のプロファイル一覧が届いたときに呼ばれる（Macがプロファイル設定の本体のため）
   var onProfileSync: (([ProfileConfig], UUID) -> Void)?
@@ -35,6 +43,7 @@ final class ConnectionManager {
   private var pendingRequests: [String: (Result<Void, Error>) -> Void] = [:]
   private var pendingTabsCompletion: (([TabInfo], [MacApplicationInfo]) -> Void)?
   private var pendingApplicationsCompletion: (([MacApplicationInfo]) -> Void)?
+  private var pendingFolderSelectionCompletion: ((String?) -> Void)?
   private let deviceName = UIDevice.current.name
 
   /// ユーザー操作による切断かどうか（自動再接続を行うかどうかの判定に使う）
@@ -77,11 +86,20 @@ final class ConnectionManager {
     stopKeepAlive()
     bonjourClient.stop()
     state = .disconnected
+    hasPairedBefore = false
+    isPairingInProgress = false
+    isPairingReconnecting = false
+    pendingPairingPin = nil
   }
 
   /// PINを送信してペアリングを行う
   func pair(pin: String) {
-    send(PairMessage(deviceName: deviceName, pin: pin))
+    let normalizedPin = pin.filter(\.isNumber)
+    guard normalizedPin.count == 6 else { return }
+    pendingPairingPin = normalizedPin
+    isPairingInProgress = true
+    isPairingReconnecting = false
+    send(PairMessage(deviceName: deviceName, pin: normalizedPin))
   }
 
   /// アクションの実行をMacへ依頼する
@@ -101,6 +119,12 @@ final class ConnectionManager {
   func requestApplications(completion: @escaping ([MacApplicationInfo]) -> Void) {
     pendingApplicationsCompletion = completion
     send(GetApplicationsMessage())
+  }
+
+  /// MacのNSOpenPanelでフォルダーを選択してもらう。iPadからMacのパスを手入力する必要をなくす。
+  func requestFolderSelection(completion: @escaping (String?) -> Void) {
+    pendingFolderSelectionCompletion = completion
+    send(PickFolderMessage())
   }
 
   /// iPad側での編集内容をMac（プロファイル設定の本体）へ反映依頼する
@@ -137,23 +161,40 @@ final class ConnectionManager {
 
   private func handleConnected() {
     reconnectAttempt = 0
+    isPairingReconnecting = false
     if let savedToken = KeychainTokenStore.load() {
       state = .resuming
       send(ResumeSessionMessage(token: savedToken))
     } else {
       state = .waitingForPairing
+      if isPairingInProgress, let pendingPairingPin {
+        // WebSocketのready通知直後に送信すると、NWConnectionの書き込みキューが
+        // 切り替え中のことがあるため、次のrun loopで再送する。
+        DispatchQueue.main.async { [weak self] in
+          guard let self, self.isPairingInProgress else { return }
+          self.send(PairMessage(deviceName: self.deviceName, pin: pendingPairingPin))
+        }
+      }
     }
     startKeepAlive()
   }
 
   private func handleDisconnected() {
     stopKeepAlive()
-    state = .disconnected
+    if isPairingInProgress {
+      isPairingReconnecting = true
+      state = .waitingForPairing
+    } else {
+      state = .disconnected
+    }
     scheduleReconnectIfNeeded()
   }
 
   private func handleFailure(_ message: String) {
     stopKeepAlive()
+    if isPairingInProgress {
+      isPairingReconnecting = true
+    }
     state = .failed(message)
     scheduleReconnectIfNeeded()
   }
@@ -217,6 +258,10 @@ final class ConnectionManager {
         let message = try JSONDecoder().decode(ApplicationsListMessage.self, from: data)
         pendingApplicationsCompletion?(message.applications)
         pendingApplicationsCompletion = nil
+      case "folderSelection":
+        let message = try JSONDecoder().decode(FolderSelectionMessage.self, from: data)
+        pendingFolderSelectionCompletion?(message.path)
+        pendingFolderSelectionCompletion = nil
       case "clipboardHistory":
         let message = try JSONDecoder().decode(ClipboardHistoryMessage.self, from: data)
         onClipboardHistory?(message.items)
@@ -234,11 +279,22 @@ final class ConnectionManager {
         KeychainTokenStore.save(token)
       }
       state = .paired
+      hasPairedBefore = true
+      isPairingInProgress = false
+      isPairingReconnecting = false
+      pendingPairingPin = nil
     } else if state == .resuming {
-      // 保存済みトークンが無効だった場合はPIN入力へフォールバックする
+      // 保存済みトークンが無効だった場合はPIN入力へフォールバックする（新規ペアリングが必要なため
+      // MainTabViewを維持する必要はなく、通常通りペアリング画面へ戻す）
       KeychainTokenStore.delete()
       state = .waitingForPairing
+      hasPairedBefore = false
+      isPairingInProgress = false
+      isPairingReconnecting = false
+      pendingPairingPin = nil
     } else {
+      isPairingInProgress = false
+      isPairingReconnecting = false
       state = .failed(response.errorMessage ?? "ペアリングに失敗しました")
     }
   }

@@ -31,6 +31,8 @@ private enum ClockDesignStyle: String, CaseIterable, Identifiable {
   case digital = "デジタル"
   case flip = "パタパタ"
   case analog = "アナログ"
+  case relax = "癒し"
+  case cyber = "サイバー"
 
   var id: String { rawValue }
 }
@@ -52,6 +54,13 @@ struct ClockView: View {
   @State private var clockOffsetY: CGFloat = 0
   @State private var areControlsVisible = true
   @State private var lastInteraction = Date()
+  /// 「時計のみ表示」（コントロール非表示）になったことを親へ伝え、下部タブバーも連動して隠すためのフラグ。
+  /// MainTabView以外（単体表示・プレビュー）ではタブバーが無いため、デフォルトのダミーBindingでそのままでOK
+  @Binding private var isImmersive: Bool
+
+  init(isImmersive: Binding<Bool> = .constant(false)) {
+    _isImmersive = isImmersive
+  }
 
   private let clockTicker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
   private let burnInProtectionTicker = Timer.publish(
@@ -61,7 +70,10 @@ struct ClockView: View {
   var body: some View {
     GeometryReader { proxy in
       ZStack {
-        GamingBackground(accentColor: themeStore.accentColor)
+        GamingBackground(
+          accentColor: themeStore.accentColor,
+          showsGlow: themeStore.backgroundGlowEnabled
+        )
 
         VStack(spacing: 0) {
           if areControlsVisible {
@@ -131,7 +143,7 @@ struct ClockView: View {
             }
           }
           .pickerStyle(.segmented)
-          .frame(width: 240)
+          .frame(width: 300)
         }
       }
 
@@ -184,6 +196,24 @@ struct ClockView: View {
               value: areControlsVisible
             )
             .padding(.vertical, areControlsVisible ? 0 : 20)
+        case .relax:
+          RelaxingClockView(date: now)
+            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+            .animation(
+              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+              value: areControlsVisible
+            )
+            .padding(.vertical, areControlsVisible ? 0 : 20)
+        case .cyber:
+          CyberClockView(date: now)
+            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+            .animation(
+              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+              value: areControlsVisible
+            )
+            .padding(.vertical, areControlsVisible ? 0 : 20)
         }
       }
 
@@ -205,6 +235,7 @@ struct ClockView: View {
     guard !areControlsVisible else { return }
     withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
       areControlsVisible = true
+      isImmersive = false
     }
   }
 
@@ -212,6 +243,7 @@ struct ClockView: View {
     guard areControlsVisible else { return }
     withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
       areControlsVisible = false
+      isImmersive = true
     }
   }
 
@@ -292,25 +324,23 @@ private struct TimerToolView: View {
 
   private var timerControls: some View {
     HStack(spacing: 16) {
-      Button(model.runState == .running ? "一時停止" : "開始") {
+      Button {
         if model.runState == .running {
           model.pause()
         } else {
           model.start()
         }
+      } label: {
+        Text(model.runState == .running ? "一時停止" : "開始")
       }
-      .font(.title3.weight(.bold))
-      .padding(.horizontal, 32)
-      .padding(.vertical, 14)
-      .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+      .buttonStyle(PrimaryActionButtonStyle(accentColor: themeStore.accentColor))
 
-      Button("リセット") {
+      Button {
         model.reset()
+      } label: {
+        Text("リセット")
       }
-      .font(.title3.weight(.bold))
-      .padding(.horizontal, 32)
-      .padding(.vertical, 14)
-      .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+      .buttonStyle(SecondaryActionButtonStyle())
     }
   }
 }
@@ -329,25 +359,23 @@ private struct StopwatchToolView: View {
         .foregroundStyle(GamingPalette.foreground)
 
       HStack(spacing: 16) {
-        Button(model.runState == .running ? "一時停止" : "開始") {
+        Button {
           if model.runState == .running {
             model.pause()
           } else {
             model.start()
           }
+        } label: {
+          Text(model.runState == .running ? "一時停止" : "開始")
         }
-        .font(.title3.weight(.bold))
-        .padding(.horizontal, 32)
-        .padding(.vertical, 14)
-        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+        .buttonStyle(PrimaryActionButtonStyle(accentColor: themeStore.accentColor))
 
-        Button("リセット") {
+        Button {
           model.reset()
+        } label: {
+          Text("リセット")
         }
-        .font(.title3.weight(.bold))
-        .padding(.horizontal, 32)
-        .padding(.vertical, 14)
-        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+        .buttonStyle(SecondaryActionButtonStyle())
       }
     }
   }
@@ -371,27 +399,66 @@ private struct PomodoroToolView: View {
         .foregroundStyle(GamingPalette.foreground)
 
       HStack(spacing: 16) {
-        Button(model.runState == .running ? "一時停止" : "開始") {
+        Button {
           if model.runState == .running {
             model.pause()
           } else {
             model.start()
           }
+        } label: {
+          Text(model.runState == .running ? "一時停止" : "開始")
         }
-        .font(.title3.weight(.bold))
-        .padding(.horizontal, 32)
-        .padding(.vertical, 14)
-        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+        .buttonStyle(PrimaryActionButtonStyle(accentColor: themeStore.accentColor))
 
-        Button("リセット") {
+        Button {
           model.reset()
+        } label: {
+          Text("リセット")
         }
-        .font(.title3.weight(.bold))
-        .padding(.horizontal, 32)
-        .padding(.vertical, 14)
-        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+        .buttonStyle(SecondaryActionButtonStyle())
       }
     }
+  }
+}
+
+// MARK: - ツール用ボタンスタイル
+
+private struct PrimaryActionButtonStyle: ButtonStyle {
+  var accentColor: Color
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.title3.weight(.bold))
+      .foregroundStyle(Color(hex: 0x0F0F23)) // 背景色に近い暗色にしてコントラストを高くする
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 18)
+      .background(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .fill(accentColor.opacity(configuration.isPressed ? 0.7 : 1.0))
+      )
+      .shadow(color: accentColor.opacity(0.4), radius: configuration.isPressed ? 4 : 12, y: configuration.isPressed ? 2 : 6)
+      .scaleEffect(configuration.isPressed ? 0.96 : 1)
+      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+  }
+}
+
+private struct SecondaryActionButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .font(.title3.weight(.bold))
+      .foregroundStyle(GamingPalette.foreground)
+      .frame(maxWidth: .infinity)
+      .padding(.vertical, 18)
+      .background(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .fill(GamingPalette.muted.opacity(0.8))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .stroke(GamingPalette.mutedForeground.opacity(0.2), lineWidth: 1)
+      )
+      .scaleEffect(configuration.isPressed ? 0.96 : 1)
+      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
   }
 }
 

@@ -4,6 +4,8 @@
 //
 //  US ANSI配列を模した仮想キーボード画面。既存のhotkeyアクション（ActionExecutor.sendHotkey）を
 //  そのまま利用し、修飾キー（Shift/Ctrl/Opt/Cmd）はタップでON/OFFする一時的なトグルキーとして扱う。
+//  キー配列の下にはトラックパッド（TrackpadSurfaceView）も統合しており、
+//  画面の余白を使ってカーソル操作・クリックもこの1画面で完結できるようにしている。
 //
 
 import SwiftUI
@@ -25,8 +27,8 @@ private enum ModifierKey: String, CaseIterable {
   }
 }
 
-/// キーボード上の1キー分の定義
-private struct KeyDefinition: Identifiable {
+/// キーボード上の1キー分の定義。ButtonEditView（ホットキー登録のキー選択グリッド）からも共用する
+struct KeyDefinition: Identifiable {
   let id = UUID()
   let label: String
   /// ActionExecutor.keyCodesに対応するキー名
@@ -43,9 +45,12 @@ struct KeyboardView: View {
   /// 現在ONになっている修飾キー（キー送信時にまとめて使い、送信後は自動でOFFに戻す）
   @State private var activeModifiers: Set<ModifierKey> = []
 
+  /// タップ領域がHIGの44pt未満にならないようにするキーの最低の高さ
+  private static let minKeyHeight: CGFloat = 44
+
   var body: some View {
     VStack(spacing: 12) {
-      Text("キーボード（US配列）")
+      Text("キーボード＆トラックパッド（US配列）")
         .font(.headline)
         .foregroundStyle(GamingPalette.foreground)
         .padding(.top)
@@ -59,7 +64,74 @@ struct KeyboardView: View {
       }
       .padding()
 
-      Spacer()
+      trackpadSection
+        .frame(maxHeight: .infinity)
+    }
+  }
+
+  // MARK: - トラックパッド
+
+  /// キー配列の下に配置する、TrackpadView由来のトラックパッド操作エリア。
+  /// 画面上部をキーが占有するため、案内テキストはTrackpadView時代の複数行legendより
+  /// 大幅に簡潔な一行のヒントに留めている
+  private var trackpadSection: some View {
+    VStack(spacing: 10) {
+      RoundedRectangle(cornerRadius: 20)
+        .fill(Color.clear)
+        .gamingCard(accentColor: themeStore.accentColor, cornerRadius: 20)
+        .overlay {
+          Label("ドラッグでカーソル移動・タップでクリック", systemImage: "hand.point.up.left")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(GamingPalette.mutedForeground)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 8)
+        }
+        .overlay {
+          TrackpadSurfaceView(
+            onMove: { dx, dy in
+              connectionManager.sendTrackpadMove(dx: dx, dy: dy)
+            },
+            onScroll: { dx, dy in
+              connectionManager.sendTrackpadScroll(dx: dx, dy: dy)
+            },
+            onLeftClick: {
+              connectionManager.sendTrackpadClick(button: "left")
+            },
+            onRightClick: {
+              connectionManager.sendTrackpadClick(button: "right")
+            },
+            onThreeFingerSwipeLeft: {
+              // 3本指左スワイプ = 次のスペースへ（Control+右矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "right"]))
+            },
+            onThreeFingerSwipeRight: {
+              // 3本指右スワイプ = 前のスペースへ（Control+左矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "left"]))
+            },
+            onThreeFingerSwipeUp: {
+              // 3本指上スワイプ = Mission Control（Control+上矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "up"]))
+            },
+            onThreeFingerSwipeDown: {
+              // 3本指下スワイプ = Application Exposé（Control+下矢印と同等）
+              connectionManager.execute(ActionPayload(type: .hotkey, keys: ["ctrl", "down"]))
+            }
+          )
+        }
+        .padding(.horizontal)
+
+      HStack(spacing: 24) {
+        Button("左クリック") {
+          connectionManager.sendTrackpadClick(button: "left")
+        }
+        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+
+        Button("右クリック") {
+          connectionManager.sendTrackpadClick(button: "right")
+        }
+        .buttonStyle(GamingButtonStyle(accentColor: themeStore.accentColor))
+      }
+      .padding(.bottom)
     }
   }
 
@@ -115,7 +187,7 @@ struct KeyboardView: View {
       Text(key.label)
         .font(.system(size: 15))
         .foregroundStyle(GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: 40)
+        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: false))
     .frame(maxWidth: .infinity)
@@ -131,7 +203,7 @@ struct KeyboardView: View {
       Text(modifier.label)
         .font(.system(size: 15))
         .foregroundStyle(isActive ? Color.white : GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: 40)
+        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: isActive))
     .frame(maxWidth: .infinity)
@@ -147,7 +219,7 @@ struct KeyboardView: View {
       Text(label)
         .font(.system(size: 13))
         .foregroundStyle(GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: 40)
+        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: false))
     .frame(maxWidth: .infinity)
@@ -182,7 +254,7 @@ struct KeyboardView: View {
 
   // MARK: - US ANSI配列のキー定義
 
-  private static let numberRow: [KeyDefinition] = [
+  static let numberRow: [KeyDefinition] = [
     KeyDefinition(label: "`", keyName: "`"),
     KeyDefinition(label: "1", keyName: "1"), KeyDefinition(label: "2", keyName: "2"),
     KeyDefinition(label: "3", keyName: "3"), KeyDefinition(label: "4", keyName: "4"),
@@ -193,7 +265,7 @@ struct KeyboardView: View {
     KeyDefinition(label: "delete", keyName: "delete", widthWeight: 2)
   ]
 
-  private static let qwertyRow: [KeyDefinition] = [
+  static let qwertyRow: [KeyDefinition] = [
     KeyDefinition(label: "tab", keyName: "tab", widthWeight: 1.5),
     KeyDefinition(label: "Q", keyName: "q"), KeyDefinition(label: "W", keyName: "w"),
     KeyDefinition(label: "E", keyName: "e"), KeyDefinition(label: "R", keyName: "r"),
@@ -204,7 +276,7 @@ struct KeyboardView: View {
     KeyDefinition(label: "\\", keyName: "\\", widthWeight: 1.5)
   ]
 
-  private static let homeRow: [KeyDefinition] = [
+  static let homeRow: [KeyDefinition] = [
     KeyDefinition(label: "caps", keyName: "capslock", widthWeight: 1.8),
     KeyDefinition(label: "A", keyName: "a"), KeyDefinition(label: "S", keyName: "s"),
     KeyDefinition(label: "D", keyName: "d"), KeyDefinition(label: "F", keyName: "f"),
@@ -215,12 +287,22 @@ struct KeyboardView: View {
     KeyDefinition(label: "return", keyName: "return", widthWeight: 1.8)
   ]
 
-  private static let bottomLetterKeys: [KeyDefinition] = [
+  static let bottomLetterKeys: [KeyDefinition] = [
     KeyDefinition(label: "Z", keyName: "z"), KeyDefinition(label: "X", keyName: "x"),
     KeyDefinition(label: "C", keyName: "c"), KeyDefinition(label: "V", keyName: "v"),
     KeyDefinition(label: "B", keyName: "b"), KeyDefinition(label: "N", keyName: "n"),
     KeyDefinition(label: "M", keyName: "m"), KeyDefinition(label: ",", keyName: ","),
     KeyDefinition(label: ".", keyName: "."), KeyDefinition(label: "/", keyName: "/")
+  ]
+
+  /// numberRow/qwertyRow/homeRow/bottomLetterKeysに含まれない、ホットキー登録でよく使う特殊キー
+  static let extraKeys: [KeyDefinition] = [
+    KeyDefinition(label: "esc", keyName: "escape", widthWeight: 1.3),
+    KeyDefinition(label: "space", keyName: "space", widthWeight: 2.4),
+    KeyDefinition(label: "←", keyName: "left"),
+    KeyDefinition(label: "↑", keyName: "up"),
+    KeyDefinition(label: "↓", keyName: "down"),
+    KeyDefinition(label: "→", keyName: "right")
   ]
 }
 

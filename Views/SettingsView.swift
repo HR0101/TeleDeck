@@ -19,8 +19,14 @@ struct SettingsView: View {
     NavigationStack {
       Form {
         appearanceSection
+        backgroundSection
         accentColorSection
+        appIconGridSection
+        tabOrderSection
       }
+      // タブ並び替えセクションのドラッグハンドルを、「編集」ボタンを押さなくても
+      // 最初から常に見えるようにする
+      .environment(\.editMode, .constant(.active))
       .scrollContentBackground(.hidden)
       .background(GamingPalette.background)
       .navigationTitle("設定")
@@ -53,6 +59,28 @@ struct SettingsView: View {
     .listRowBackground(GamingPalette.card.opacity(0.55))
   }
 
+  // MARK: - 背景エフェクト設定
+
+  private var backgroundSection: some View {
+    Section {
+      Toggle(isOn: $themeStore.backgroundGlowEnabled) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("動くグロー背景")
+            .foregroundStyle(GamingPalette.foreground)
+          Text("オンにすると、ぼかし光がゆっくり動きます。電池を節約する場合はオフがおすすめです")
+            .font(.caption)
+            .foregroundStyle(GamingPalette.mutedForeground)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .tint(themeStore.accentColor)
+    } header: {
+      Text("背景")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
+  }
+
   // MARK: - アクセントカラー設定
 
   private var accentColorSection: some View {
@@ -62,6 +90,46 @@ struct SettingsView: View {
       }
     } header: {
       Text("アクセントカラー")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
+  }
+
+  // MARK: - アプリ一覧のアイコンサイズ設定
+
+  private var appIconGridSection: some View {
+    Section {
+      Stepper(
+        "1行あたりのアイコン数: \(themeStore.appIconGridColumns)",
+        value: $themeStore.appIconGridColumns,
+        in: ThemeStore.appIconGridColumnsRange
+      )
+      Text("数を減らすほど「アプリ」タブのアイコンが大きく表示されます")
+        .font(.caption)
+        .foregroundStyle(GamingPalette.mutedForeground)
+    } header: {
+      Text("アプリ一覧の表示")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
+  }
+
+  // MARK: - 下部タブの並び順設定
+
+  private var tabOrderSection: some View {
+    Section {
+      ForEach(themeStore.tabOrder) { tab in
+        Label(tab.title, systemImage: tab.systemImage)
+          .foregroundStyle(GamingPalette.foreground)
+      }
+      .onMove { indices, newOffset in
+        themeStore.tabOrder.move(fromOffsets: indices, toOffset: newOffset)
+      }
+    } header: {
+      Text("下部タブの順番")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    } footer: {
+      Text("右側のハンドルをドラッグして並び替えられます")
         .foregroundStyle(GamingPalette.mutedForeground)
     }
     .listRowBackground(GamingPalette.card.opacity(0.55))

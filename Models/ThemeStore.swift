@@ -62,7 +62,13 @@ final class ThemeStore {
   private enum StorageKey {
     static let colorScheme = "themeStore.colorScheme"
     static let accentColorOption = "themeStore.accentColorOption"
+    static let backgroundGlowEnabled = "themeStore.backgroundGlowEnabled"
+    static let appIconGridColumns = "themeStore.appIconGridColumns"
+    static let tabOrder = "themeStore.tabOrder"
   }
+
+  /// 「アプリ」タブのアイコングリッドの列数として選べる範囲。列数を減らすほどアイコンが大きく表示される
+  static let appIconGridColumnsRange = 2...8
 
   var colorScheme: AppColorScheme {
     didSet { persistColorScheme() }
@@ -70,6 +76,20 @@ final class ThemeStore {
 
   var accentColorOption: AccentColorOption {
     didSet { persistAccentColorOption() }
+  }
+
+  /// 大きなぼかし円を動かす背景エフェクト。電池消費を抑えるため既定値はOFF。
+  var backgroundGlowEnabled: Bool {
+    didSet { persistBackgroundGlowEnabled() }
+  }
+
+  var appIconGridColumns: Int {
+    didSet { persistAppIconGridColumns() }
+  }
+
+  /// 下部タブバーの表示順序。設定画面からドラッグで並び替えられる
+  var tabOrder: [MainTab] {
+    didSet { persistTabOrder() }
   }
 
   private let userDefaults: UserDefaults
@@ -90,6 +110,23 @@ final class ThemeStore {
       accentColorOption = storedAccent
     } else {
       accentColorOption = .purple
+    }
+
+    // 既存ユーザーも初回は省電力の静的背景になるよう、未保存時はOFFにする。
+    backgroundGlowEnabled = userDefaults.object(forKey: StorageKey.backgroundGlowEnabled) == nil
+      ? false
+      : userDefaults.bool(forKey: StorageKey.backgroundGlowEnabled)
+
+    let storedColumns = userDefaults.integer(forKey: StorageKey.appIconGridColumns)
+    appIconGridColumns = storedColumns == 0 ? 4 : storedColumns
+
+    if let storedTabOrderRawValues = userDefaults.array(forKey: StorageKey.tabOrder) as? [String] {
+      let storedTabs = storedTabOrderRawValues.compactMap { MainTab(rawValue: $0) }
+      // 保存後にアプリの更新でタブが追加された場合に備え、保存済みの順序に無いタブは末尾へ補う
+      let missingTabs = MainTab.allCases.filter { !storedTabs.contains($0) }
+      tabOrder = storedTabs + missingTabs
+    } else {
+      tabOrder = MainTab.allCases
     }
   }
 
@@ -117,5 +154,17 @@ final class ThemeStore {
 
   private func persistAccentColorOption() {
     userDefaults.set(accentColorOption.rawValue, forKey: StorageKey.accentColorOption)
+  }
+
+  private func persistBackgroundGlowEnabled() {
+    userDefaults.set(backgroundGlowEnabled, forKey: StorageKey.backgroundGlowEnabled)
+  }
+
+  private func persistAppIconGridColumns() {
+    userDefaults.set(appIconGridColumns, forKey: StorageKey.appIconGridColumns)
+  }
+
+  private func persistTabOrder() {
+    userDefaults.set(tabOrder.map(\.rawValue), forKey: StorageKey.tabOrder)
   }
 }

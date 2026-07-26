@@ -20,6 +20,10 @@ final class BonjourClient {
 
   private var browser: NWBrowser?
   private var connection: NWConnection?
+  /// 現在接続中/接続済みのエンドポイント。NWBrowserのbrowseResultsChangedHandlerは
+  /// 同じMacを指したままでも（Bonjourレコードの更新等により）何度も呼ばれることがあるため、
+  /// 実際にエンドポイントが変わった場合のみ接続を張り直すよう、これと比較して重複接続を防ぐ
+  private var currentEndpoint: NWEndpoint?
 
   /// Bonjour探索を開始する
   func start() {
@@ -36,7 +40,21 @@ final class BonjourClient {
     }
 
     newBrowser.browseResultsChangedHandler = { [weak self] results, _ in
-      guard let self, let firstResult = results.first else { return }
+      guard let self else { return }
+      // includePeerToPeerが有効なため、iPadとMacが同一Wi-Fiに加えてBluetooth/AWDLの
+      // ピアツーピア圏内にもある場合（同室にいる時など）、NWBrowserは同じMacを
+      // 経路ごとに異なる複数のNWEndpointとして報告することがある。resultsの並び順は
+      // 電波状況等でこれら同等に有効なエンドポイント間で入れ替わることがあり、
+      // 単純にresults.firstだけを見ると「Macが変わった」と誤認して、実際には
+      // 生きている接続を切って張り直してしまう（＝再接続バナーが点滅する原因）。
+      // そのため、現在のエンドポイントがresultsの中に残っている限りは何もしない
+      if let currentEndpoint = self.currentEndpoint, results.contains(where: { $0.endpoint == currentEndpoint }) {
+        return
+      }
+      // 同じエンドポイントへの再接続が繰り返されると、そのたびに既存の接続を切って
+      // 張り直すことになり、状態が点滅してペアリング画面のPIN入力欄が
+      // フォーカスを失う等の不安定さにつながるため、エンドポイントが実際に変わった時だけ接続する
+      guard let firstResult = results.first, firstResult.endpoint != self.currentEndpoint else { return }
       self.connect(to: firstResult.endpoint)
     }
 
@@ -49,6 +67,7 @@ final class BonjourClient {
     browser = nil
     connection?.cancel()
     connection = nil
+    currentEndpoint = nil
   }
 
   func send(data: Data) {
@@ -73,6 +92,7 @@ final class BonjourClient {
   // MARK: - 接続処理
 
   private func connect(to endpoint: NWEndpoint) {
+    currentEndpoint = endpoint
     connection?.cancel()
 
     let webSocketOptions = NWProtocolWebSocket.Options()
