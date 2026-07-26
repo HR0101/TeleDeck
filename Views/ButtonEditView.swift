@@ -147,7 +147,7 @@ struct ButtonEditView: View {
   @State private var isRecordingHotkey = false
   @State private var hotkeyRecordingKeys: [String] = []
   @State private var hotkeyRecordingGeneration = 0
-  @State private var automaticallyNamesApplicationButton: Bool
+  @State private var automaticallyNamesButton: Bool
   /// アイコンを未カスタマイズ（新規ボタンの初期値のまま）の間だけ、選んだアクションに合わせてアイコンを自動で変える
   @State private var automaticallyPicksIcon: Bool
   @State private var isShowingApplicationPicker = false
@@ -159,7 +159,7 @@ struct ButtonEditView: View {
 
   init(button: ButtonConfig, connectionManager: ConnectionManager, onSave: @escaping (ButtonConfig) -> Void) {
     _draft = State(initialValue: button)
-    _automaticallyNamesApplicationButton = State(
+    _automaticallyNamesButton = State(
       initialValue: button.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         || button.label == "新しいボタン"
     )
@@ -273,7 +273,7 @@ struct ButtonEditView: View {
         draft.iconKind = .sfSymbol
         draft.iconName = "macwindow"
         draft.label = application.name
-        automaticallyNamesApplicationButton = true
+        automaticallyNamesButton = true
         isShowingApplicationPicker = false
       }
     }
@@ -350,7 +350,7 @@ struct ButtonEditView: View {
       draft.action.preset = WindowLayoutPreset.leftHalf.rawValue
     }
     if choice.type == .launchApp {
-      automaticallyNamesApplicationButton = true
+      automaticallyNamesButton = true
     }
     if automaticallyPicksIcon, draft.iconKind == .sfSymbol {
       draft.iconName = choice.systemImage
@@ -901,17 +901,90 @@ struct ButtonEditView: View {
       get: { draft.label },
       set: {
         draft.label = $0
-        automaticallyNamesApplicationButton = false
+        automaticallyNamesButton = false
       }
     )
   }
 
+  // MARK: - ボタン名の自動命名
+
+  /// 定型文からボタン名を作るときに残す最大文字数
+  private static let maximumAutomaticNameLength = 12
+
+  /// 自動命名が有効な間だけ、選んだアクションの内容に合わせてボタン名を決め直す
   private func prepareAppearance() {
-    guard automaticallyNamesApplicationButton,
-          draft.action.type == .launchApp,
-          let target = draft.action.target,
-          let applicationName = applicationDisplayName(from: target) else { return }
-    draft.label = applicationName
+    guard automaticallyNamesButton, let name = automaticButtonName() else { return }
+    draft.label = name
+  }
+
+  /// 現在のアクション内容にふさわしいボタン名を返す（名前を決められない場合はnil）
+  private func automaticButtonName() -> String? {
+    switch draft.action.type {
+    case .launchApp, .activateApplication:
+      return draft.action.target.flatMap { applicationDisplayName(from: $0) } ?? selectedActionChoice?.title
+    case .quitApplication:
+      guard let applicationName = draft.action.target.flatMap({ applicationDisplayName(from: $0) }) else {
+        return selectedActionChoice?.title
+      }
+      return "\(applicationName)を終了"
+    case .openURL:
+      return websiteDisplayName(from: draft.action.target) ?? selectedActionChoice?.title
+    case .hotkey:
+      let keys = draft.action.keys ?? []
+      guard !keys.isEmpty else { return selectedActionChoice?.title }
+      return keys.map(hotkeyDisplayName).joined(separator: " + ")
+    case .typeText:
+      return textDisplayName(from: draft.action.text) ?? selectedActionChoice?.title
+    case .setVolume:
+      // 既定値が二重定義にならないよう、入力欄と同じBindingから現在値を取る
+      return "音量 \(volumeBinding.wrappedValue)%"
+    case .delay:
+      return "待機 \(msBinding.wrappedValue)ms"
+    case .windowLayout:
+      guard let preset = draft.action.preset.flatMap({ WindowLayoutPreset(rawValue: $0) }) else {
+        return selectedActionChoice?.title
+      }
+      return preset.displayName
+    case .openFinderFolder:
+      return folderDisplayName(from: draft.action.target) ?? selectedActionChoice?.title
+    case .multiAction, .openFolder, .mediaKey, .systemAction:
+      return selectedActionChoice?.title
+    case .activateTab, .closeTab:
+      // タブ一覧画面から作られる際にタブのタイトルがラベルへ入るため、ここでは上書きしない
+      return nil
+    }
+  }
+
+  /// URLから「github.com」のような表示名を作る（先頭のwww.は省く）
+  private func websiteDisplayName(from target: String?) -> String? {
+    guard let trimmed = target?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    // スキームを省略して入力されたURLでもホスト名を取り出せるようにする
+    let normalized = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+    guard let host = URL(string: normalized)?.host else { return trimmed }
+    let wwwPrefix = "www."
+    return host.hasPrefix(wwwPrefix) ? String(host.dropFirst(wwwPrefix.count)) : host
+  }
+
+  /// 定型文の先頭だけを取り出してボタン名にする
+  private func textDisplayName(from text: String?) -> String? {
+    guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    // 複数行の定型文でもボタン名は1行に収める
+    let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
+    guard firstLine.count > Self.maximumAutomaticNameLength else { return firstLine }
+    return String(firstLine.prefix(Self.maximumAutomaticNameLength)) + "…"
+  }
+
+  /// フォルダのパスから末尾のフォルダ名を取り出す
+  private func folderDisplayName(from target: String?) -> String? {
+    guard let trimmed = target?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    let folderName = URL(fileURLWithPath: trimmed).lastPathComponent
+    return folderName.isEmpty ? trimmed : folderName
   }
 
   private func applicationDisplayName(from target: String) -> String? {
