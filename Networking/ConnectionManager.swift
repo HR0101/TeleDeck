@@ -24,6 +24,10 @@ final class ConnectionManager {
   }
 
   private(set) var state: ConnectionState = .disconnected
+
+  /// Macへ操作を送れる状態か。切断中は送信内容が黙って捨てられるため、
+  /// Viewはこの値を見て操作を止めるか、送れないことを明示する
+  var isConnected: Bool { state == .paired }
   /// このセッション中に一度でもペアリングに成功したか。
   /// Mac側アプリの再起動などで一瞬切断された際に、ペアリング画面へ引き戻さず
   /// MainTabViewを維持したまま裏側で再接続できるようにするためのフラグ
@@ -54,6 +58,9 @@ final class ConnectionManager {
 
   private static let maxReconnectDelay: TimeInterval = 30
   private static let keepAliveInterval: TimeInterval = 20
+  /// ack（実行結果）を待つ上限時間。Macが応答できない状態でも、
+  /// UIが「実行中」のまま固まらないようにするために設ける
+  private static let requestTimeout: TimeInterval = 5
 
   init() {
     bonjourClient = BonjourClient()
@@ -92,6 +99,21 @@ final class ConnectionManager {
     pendingPairingPin = nil
   }
 
+  /// 保存済みの接続情報を破棄し、PIN入力からのペアリングをやり直す。
+  /// Mac側の信頼済みデバイス登録はそのまま残るが、トークンを失うため再度PINが必要になる
+  func unpair() {
+    KeychainTokenStore.delete()
+    reconnectWorkItem?.cancel()
+    stopKeepAlive()
+    bonjourClient.stop()
+    hasPairedBefore = false
+    isPairingInProgress = false
+    isPairingReconnecting = false
+    pendingPairingPin = nil
+    state = .disconnected
+    connect()
+  }
+
   /// PINを送信してペアリングを行う
   func pair(pin: String) {
     let normalizedPin = pin.filter(\.isNumber)
@@ -105,8 +127,25 @@ final class ConnectionManager {
   /// アクションの実行をMacへ依頼する
   func execute(_ action: ActionPayload, completion: @escaping (Result<Void, Error>) -> Void = { _ in }) {
     let requestId = UUID().uuidString
-    pendingRequests[requestId] = completion
+    registerPendingRequest(id: requestId, completion: completion)
     send(ExecuteMessage(requestId: requestId, action: action))
+  }
+
+  /// 応答待ちのリクエストを登録し、requestTimeout秒以内にackが返らなければ失敗として完了させる。
+  /// 併せてpendingRequestsからも取り除くため、応答の来ない要求が溜まり続けることもない
+  private func registerPendingRequest(id: String, completion: @escaping (Result<Void, Error>) -> Void) {
+    pendingRequests[id] = completion
+
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.requestTimeout) { [weak self] in
+      guard let self,
+            let timedOutCompletion = self.pendingRequests.removeValue(forKey: id) else { return }
+      let error = NSError(
+        domain: "TeleDeck",
+        code: -2,
+        userInfo: [NSLocalizedDescriptionKey: "Macから応答がありません。接続を確認してください"]
+      )
+      timedOutCompletion(.failure(error))
+    }
   }
 
   /// Mac側の開いているタブ一覧を取得する
@@ -139,7 +178,7 @@ final class ConnectionManager {
 
   /// 指定した履歴アイテムをMacのクリップボードにセットし、貼り付けまで実行するよう依頼する
   func pasteClipboardItem(id: UUID, completion: @escaping (Result<Void, Error>) -> Void = { _ in }) {
-    pendingRequests[id.uuidString] = completion
+    registerPendingRequest(id: id.uuidString, completion: completion)
     send(PasteClipboardItemMessage(itemId: id))
   }
 
