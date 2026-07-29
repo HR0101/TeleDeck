@@ -6,8 +6,10 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
+  @Environment(\.scenePhase) private var scenePhase
   @State private var connectionManager = ConnectionManager()
   @State private var themeStore = ThemeStore()
   /// Mac接続に依存しない時計機能を、ペアリングなしでも単体で使えるようにするための表示状態
@@ -17,6 +19,8 @@ struct ContentView: View {
   @State private var isShowingReconnectBanner = false
   /// 表示保留中のバナーをキャンセルするための参照（.pairedへ戻った場合や状態が再度変わった場合に使う）
   @State private var reconnectBannerShowWorkItem: DispatchWorkItem?
+  /// 初回起動時の案内を表示済みかどうか。Mac側アプリと権限が必要なことを先に伝える
+  @AppStorage("onboarding.completed") private var hasCompletedOnboarding = false
   /// 再接続バナーを表示するまでの猶予時間。この秒数より短い瞬断ではバナーを点滅させない
   private static let reconnectBannerShowDelay: TimeInterval = 0.6
 
@@ -29,10 +33,17 @@ struct ContentView: View {
         )
 
         Group {
+          // Mac側アプリと権限が必要なことを知らないまま探索画面だけを見せられても
+          // 何をすればよいか分からないため、初回だけ手順を先に案内する
+          if !hasCompletedOnboarding {
+            OnboardingView {
+              hasCompletedOnboarding = true
+            }
+          }
           // 一度ペアリング済みになった後の瞬断（Mac側アプリの再起動など）でPairingViewへ
           // 引き戻すと画面が点滅して見えるため、hasPairedBefore中は裏側で再接続を試みつつ
           // MainTabViewの表示を維持し、上部に小さな再接続バナーだけを出す
-          if connectionManager.state == .paired || connectionManager.hasPairedBefore {
+          else if connectionManager.state == .paired || connectionManager.hasPairedBefore {
             MainTabView(connectionManager: connectionManager)
               .overlay(alignment: .top) {
                 if isShowingReconnectBanner {
@@ -54,13 +65,27 @@ struct ContentView: View {
       connectionManager.connect()
       // 既にペアリング済みで起動した場合、バナーを一瞬たりとも点滅させないよう初期状態を合わせる
       updateReconnectBannerVisibility(for: connectionManager.state)
+      applyIdleTimerSetting()
     }
     .onChange(of: connectionManager.state) { _, newState in
       updateReconnectBannerVisibility(for: newState)
     }
+    // 卓上に置いたまま画面が消灯するとデッキとして機能しないため、設定に応じて自動ロックを抑止する
+    .onChange(of: themeStore.keepsScreenAwake) { _, _ in
+      applyIdleTimerSetting()
+    }
+    .onChange(of: scenePhase) { _, newPhase in
+      // バックグラウンドでは抑止を解除し、TeleDeckを離れた後まで電池を消費しないようにする
+      applyIdleTimerSetting(isActive: newPhase == .active)
+    }
     .fullScreenCover(isPresented: $isShowingStandaloneClock) {
       standaloneClock
     }
+  }
+
+  /// 設定と現在のシーン状態から、画面の自動ロックを抑止するかどうかを反映する
+  private func applyIdleTimerSetting(isActive: Bool = true) {
+    UIApplication.shared.isIdleTimerDisabled = themeStore.keepsScreenAwake && isActive
   }
 
   /// 再接続バナーの表示状態を接続状態に合わせて更新する。
