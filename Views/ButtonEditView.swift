@@ -116,27 +116,6 @@ private let actionChoiceGroups = [
   )
 ]
 
-/// ウィンドウ配置アクションのプリセット。rawValueはMac側WindowLayoutManagerが解釈する文字列と一致させる
-private enum WindowLayoutPreset: String, CaseIterable, Identifiable {
-  case leftHalf = "left-half"
-  case rightHalf = "right-half"
-  case maximize = "maximize"
-  case centered = "centered"
-  case threeSplit = "three-split"
-
-  var id: String { rawValue }
-
-  var displayName: String {
-    switch self {
-    case .leftHalf: return "左半分"
-    case .rightHalf: return "右半分"
-    case .maximize: return "最大化"
-    case .centered: return "中央寄せ"
-    case .threeSplit: return "3分割"
-    }
-  }
-}
-
 struct ButtonEditView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(ThemeStore.self) private var themeStore
@@ -153,6 +132,10 @@ struct ButtonEditView: View {
   @State private var isShowingApplicationPicker = false
   @State private var availableApplications: [MacApplicationInfo] = []
   @State private var isLoadingApplications = false
+  /// テスト実行の状態と直近の結果
+  @State private var isTestRunning = false
+  @State private var testResultMessage: String?
+  @State private var testSucceeded = false
 
   let connectionManager: ConnectionManager
   let onSave: (ButtonConfig) -> Void
@@ -200,6 +183,8 @@ struct ButtonEditView: View {
             }
           }
           .listRowBackground(GamingPalette.card.opacity(0.6))
+
+          testRunSection
 
         case .appearance:
           Section {
@@ -284,6 +269,70 @@ struct ButtonEditView: View {
     case .action: return "アクションを選択"
     case .parameters: return selectedActionTitle
     case .appearance: return "表示を設定"
+    }
+  }
+
+  // MARK: - テスト実行
+
+  /// 保存してパネルへ戻らないと動作を確認できないと、ホットキーやウィンドウ配置の
+  /// 設定が正しいか分からないまま往復することになるため、その場で試せるようにする
+  @ViewBuilder
+  private var testRunSection: some View {
+    // フォルダーとタブ操作はパネル上・タブ画面上の文脈でしか意味を持たないため対象外
+    if draft.action.type != .openFolder,
+       draft.action.type != .activateTab,
+       draft.action.type != .closeTab {
+      Section {
+        Button {
+          runTest()
+        } label: {
+          HStack(spacing: 10) {
+            if isTestRunning {
+              ProgressView()
+                .controlSize(.small)
+                .tint(themeStore.accentColor)
+            } else {
+              Image(systemName: "play.circle")
+            }
+            Text(isTestRunning ? "Macで実行中…" : "このアクションをテスト実行")
+          }
+          .foregroundStyle(themeStore.accentColor)
+        }
+        .disabled(isTestRunning || !connectionManager.isConnected)
+
+        if let testResultMessage {
+          Label(testResultMessage, systemImage: testSucceeded ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+            .font(.caption)
+            .foregroundStyle(testSucceeded ? GamingPalette.success : GamingPalette.destructive)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      } header: {
+        Text("動作確認")
+          .foregroundStyle(GamingPalette.mutedForeground)
+      } footer: {
+        Text(connectionManager.isConnected
+          ? "保存しなくても、今の設定のままMacで実行して確認できます"
+          : "Macに接続されていないため実行できません")
+          .foregroundStyle(GamingPalette.mutedForeground)
+      }
+      .listRowBackground(GamingPalette.card.opacity(0.6))
+    }
+  }
+
+  private func runTest() {
+    isTestRunning = true
+    testResultMessage = nil
+
+    connectionManager.execute(draft.action) { result in
+      isTestRunning = false
+      switch result {
+      case .success:
+        testSucceeded = true
+        testResultMessage = "Macで実行しました"
+      case .failure(let error):
+        testSucceeded = false
+        testResultMessage = error.localizedDescription
+      }
     }
   }
 
