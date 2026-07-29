@@ -26,12 +26,27 @@ struct PanelView: View {
   @State private var profileChangeNotice: String?
   /// 空 = プロファイル直下。末尾の要素が現在いるフォルダーのid。無限階層に対応するためスタックで管理する
   @State private var folderStack: [UUID] = []
+  /// 実行中・成功・失敗をタイルへ返すための状態（ボタンidごとに保持する）
+  @State private var buttonFeedback: [UUID: ButtonExecutionFeedback] = [:]
+  /// 実行に失敗したときに画面上部へ出すエラーメッセージ
+  @State private var executionErrorMessage: String?
+  /// エラーバナーを自動的に閉じるための予約（新しいエラーが来たら取り直す）
+  @State private var errorDismissWorkItem: DispatchWorkItem?
+  /// ボタン名の検索語。入力中はグリッドではなく検索結果の一覧を表示する
+  @State private var searchText = ""
 
   /// グリッドの余白（セル間隔・外周パディング）
   private static let gridSpacing: CGFloat = 16
   private static let gridPadding: CGFloat = 20
   /// ボタンが小さくなりすぎて操作しづらくならないよう設ける下限サイズ
   private static let minimumCellSize: CGFloat = 64
+  /// タイル内の文字はグリッドの寸法に比例させる必要があるため全面的なDynamic Type対応はできない。
+  /// 代わりに下限だけを文字サイズ設定に追随させ、大きな文字設定でもラベルが潰れないようにする
+  @ScaledMetric(relativeTo: .caption) private var minimumLabelFontSize: CGFloat = 10
+  /// 実行結果（成功・失敗）をタイル上に見せておく時間
+  private static let feedbackDisplayDuration: TimeInterval = 0.9
+  /// エラーバナーを自動的に閉じるまでの時間
+  private static let errorBannerDuration: TimeInterval = 4
 
   /// 現在のフォルダー階層に属するボタンのみ
   private var visibleButtons: [ButtonConfig] {
@@ -57,10 +72,20 @@ struct PanelView: View {
       ZStack {
         GamingPalette.background.opacity(0.72)
 
-        GeometryReader { proxy in
-          ScrollView([.horizontal, .vertical], showsIndicators: false) {
-            gridBody(availableSize: proxy.size)
+        if isSearching {
+          searchResults
+        } else {
+          GeometryReader { proxy in
+            ScrollView([.horizontal, .vertical], showsIndicators: false) {
+              gridBody(availableSize: proxy.size)
+            }
           }
+        }
+      }
+      // 失敗の理由はタイルの隅のバッジだけでは伝わらないため、文言はグリッド上部に重ねて出す
+      .overlay(alignment: .top) {
+        if executionErrorMessage != nil {
+          executionErrorBanner
         }
       }
     }
@@ -144,6 +169,8 @@ struct PanelView: View {
       }
 
       profileMenu
+
+      searchField
 
       folderNavigator
         .frame(maxHeight: .infinity, alignment: .top)
@@ -235,7 +262,9 @@ struct PanelView: View {
         }
       }
       Divider()
-      Label("新規作成・編集はMacで管理", systemImage: "desktopcomputer")
+      Section("プロファイルの追加・削除はMacで行います") {
+        EmptyView()
+      }
     } label: {
       HStack(spacing: 9) {
         Image(systemName: "square.grid.3x3.fill")
@@ -274,6 +303,169 @@ struct PanelView: View {
     .buttonStyle(PanelToolbarButtonStyle())
     .accessibilityLabel("プロファイルを切り替える")
     .accessibilityValue(profileStore.activeProfile.name)
+  }
+
+  // MARK: - ボタン検索
+
+  private var isSearching: Bool {
+    !searchText.trimmingCharacters(in: .whitespaces).isEmpty
+  }
+
+  /// フォルダーは無限に深くできるため、階層をたどらずに名前で直接探せるようにする。
+  /// 検索対象はプロファイル全体（現在のフォルダー内に限定しない）
+  private var matchingButtons: [ButtonConfig] {
+    let query = searchText.trimmingCharacters(in: .whitespaces)
+    guard !query.isEmpty else { return [] }
+    return profileStore.activeProfile.buttons
+      .filter { $0.label.localizedCaseInsensitiveContains(query) }
+      .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+  }
+
+  private var searchField: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(GamingPalette.mutedForeground)
+
+      TextField("ボタンを検索", text: $searchText)
+        .textFieldStyle(.plain)
+        .font(.subheadline)
+        .foregroundStyle(GamingPalette.foreground)
+        .autocorrectionDisabled()
+        .textInputAutocapitalization(.never)
+
+      if isSearching {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 14))
+            .foregroundStyle(GamingPalette.mutedForeground)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("検索をクリア")
+      }
+    }
+    .padding(.horizontal, 10)
+    .frame(minHeight: 38)
+    .background(
+      GamingPalette.muted.opacity(0.5),
+      in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(themeStore.accentColor.opacity(isSearching ? 0.5 : 0.2), lineWidth: 1)
+    }
+  }
+
+  /// 検索中はグリッドの代わりに一覧を出す。フォルダーの中にあるボタンも位置を問わず並べ、
+  /// タップでそのまま実行（フォルダーの場合はその階層へ移動）できるようにする
+  private var searchResults: some View {
+    let matches = matchingButtons
+
+    return Group {
+      if matches.isEmpty {
+        VStack(spacing: 10) {
+          Image(systemName: "magnifyingglass")
+            .font(.system(size: 34))
+            .foregroundStyle(GamingPalette.mutedForeground)
+          Text("「\(searchText)」に一致するボタンがありません")
+            .font(.subheadline)
+            .foregroundStyle(GamingPalette.mutedForeground)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        ScrollView {
+          LazyVStack(spacing: 8) {
+            ForEach(matches) { button in
+              searchResultRow(button)
+            }
+          }
+          .frame(maxWidth: 760)
+          .padding(20)
+          .frame(maxWidth: .infinity)
+        }
+      }
+    }
+  }
+
+  private func searchResultRow(_ button: ButtonConfig) -> some View {
+    Button {
+      if isEditMode {
+        editingButton = button
+      } else if button.action.type == .openFolder {
+        // フォルダーそのものを選んだ場合は、その階層を開いて検索を終える
+        folderStack = folderStackPath(to: button.id)
+        searchText = ""
+      } else {
+        executeButton(button)
+      }
+    } label: {
+      HStack(spacing: 14) {
+        AnimatedIconView(
+          iconKind: button.iconKind,
+          iconName: button.iconName,
+          iconImageFileName: button.iconImageFileName
+        )
+        .font(.system(size: 20))
+        .frame(width: 30, height: 30)
+        .foregroundStyle(themeStore.accentColor)
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(button.label)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(GamingPalette.foreground)
+            .lineLimit(1)
+
+          Text(searchResultLocation(of: button))
+            .font(.caption2)
+            .foregroundStyle(GamingPalette.mutedForeground)
+            .lineLimit(1)
+            .truncationMode(.head)
+        }
+
+        Spacer(minLength: 8)
+
+        if let feedback = buttonFeedback[button.id] {
+          feedbackBadge(for: feedback, cellSize: 60)
+        }
+      }
+      .padding(.horizontal, 16)
+      .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+      .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .background(
+        GamingPalette.card.opacity(0.62),
+        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      )
+      .overlay {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .stroke(themeStore.accentColor.opacity(0.22), lineWidth: 1)
+      }
+    }
+    .buttonStyle(PanelToolbarButtonStyle())
+  }
+
+  /// 検索結果の各行に「ホーム / 親フォルダー / …」の所在を示す
+  private func searchResultLocation(of button: ButtonConfig) -> String {
+    let names = folderStackPath(to: button.id).compactMap { id in
+      profileStore.activeProfile.buttons.first(where: { $0.id == id })?.label
+    }
+    return (["ホーム"] + names).joined(separator: " / ")
+  }
+
+  /// 指定ボタンが属するフォルダーの階層を、ルートからの順に並べて返す
+  private func folderStackPath(to buttonId: UUID) -> [UUID] {
+    var path: [UUID] = []
+    var currentId = profileStore.activeProfile.buttons.first(where: { $0.id == buttonId })?.folderId
+
+    // 万一データが循環していても止まるよう、辿った数をボタン総数で上限にする
+    var remainingSteps = profileStore.activeProfile.buttons.count
+    while let folderId = currentId, remainingSteps > 0 {
+      path.insert(folderId, at: 0)
+      currentId = profileStore.activeProfile.buttons.first(where: { $0.id == folderId })?.folderId
+      remainingSteps -= 1
+    }
+    return path
   }
 
   private var folderNavigator: some View {
@@ -481,6 +673,143 @@ struct PanelView: View {
     profileStore.updateButton(movedButton)
   }
 
+  // MARK: - アクションの実行と結果表示
+
+  /// ボタンのアクションをMacへ送り、結果をタイルとエラーバナーの両方へ反映する。
+  /// 送りっぱなしにすると「押したのに何も起きない」理由がユーザーに分からなくなるため、
+  /// 成功・失敗のどちらも必ず画面へ返す
+  private func executeButton(_ button: ButtonConfig) {
+    // 切断中は送信内容が黙って捨てられる。応答待ちの5秒を無駄にせず、その場で理由を伝える
+    guard connectionManager.isConnected else {
+      buttonFeedback[button.id] = .failed
+      showExecutionError("Macに接続されていません。再接続を待っています")
+      clearFeedback(for: button.id, after: Self.feedbackDisplayDuration)
+      return
+    }
+
+    buttonFeedback[button.id] = .running
+
+    connectionManager.execute(button.action) { result in
+      switch result {
+      case .success:
+        buttonFeedback[button.id] = .succeeded
+      case .failure(let error):
+        buttonFeedback[button.id] = .failed
+        showExecutionError(error.localizedDescription)
+      }
+      clearFeedback(for: button.id, after: Self.feedbackDisplayDuration)
+    }
+  }
+
+  /// 結果表示を一定時間後に消す。連打で新しい実行が始まっている場合は、
+  /// そちらの表示を消してしまわないよう`.running`のときは手を触れない
+  private func clearFeedback(for buttonId: UUID, after delay: TimeInterval) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+      guard buttonFeedback[buttonId] != .running else { return }
+      withAnimation(.easeOut(duration: 0.2)) {
+        buttonFeedback[buttonId] = nil
+      }
+    }
+  }
+
+  private func showExecutionError(_ message: String) {
+    errorDismissWorkItem?.cancel()
+
+    withAnimation(.easeOut(duration: 0.2)) {
+      executionErrorMessage = message
+    }
+
+    let workItem = DispatchWorkItem {
+      dismissExecutionError()
+    }
+    errorDismissWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.errorBannerDuration, execute: workItem)
+  }
+
+  private func dismissExecutionError() {
+    errorDismissWorkItem?.cancel()
+    errorDismissWorkItem = nil
+    withAnimation(.easeIn(duration: 0.2)) {
+      executionErrorMessage = nil
+    }
+  }
+
+  private var executionErrorBanner: some View {
+    HStack(spacing: 12) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .font(.system(size: 17, weight: .semibold))
+        .foregroundStyle(GamingPalette.destructive)
+
+      Text(executionErrorMessage ?? "")
+        .font(.subheadline.weight(.medium))
+        .foregroundStyle(GamingPalette.foreground)
+        .lineLimit(3)
+        .fixedSize(horizontal: false, vertical: true)
+
+      Spacer(minLength: 4)
+
+      Button {
+        dismissExecutionError()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.caption.weight(.bold))
+          .foregroundStyle(GamingPalette.mutedForeground)
+          .frame(width: 44, height: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("エラーを閉じる")
+    }
+    .padding(.leading, 18)
+    .padding(.trailing, 4)
+    .padding(.vertical, 8)
+    .frame(maxWidth: 640)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .background(GamingPalette.card.opacity(0.92), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay {
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(GamingPalette.destructive.opacity(0.55), lineWidth: 1)
+    }
+    .shadow(color: .black.opacity(0.4), radius: 18, y: 8)
+    .padding(.top, 14)
+    .padding(.horizontal, 20)
+    .transition(.move(edge: .top).combined(with: .opacity))
+    .accessibilityElement(children: .contain)
+  }
+
+  /// 実行中・成功・失敗をタイルの隅に小さく示す。
+  /// アイコンとラベルを覆い隠さないよう、大きさはセルサイズに比例した控えめな値に留める
+  @ViewBuilder
+  private func feedbackBadge(for feedback: ButtonExecutionFeedback?, cellSize: CGFloat) -> some View {
+    let badgeSize = min(max(cellSize * 0.2, 15), 24)
+
+    switch feedback {
+    case .none:
+      EmptyView()
+
+    case .running:
+      ProgressView()
+        .controlSize(.small)
+        .tint(themeStore.accentColor)
+        .frame(width: badgeSize, height: badgeSize)
+        .padding(7)
+
+    case .succeeded:
+      feedbackBadgeIcon("checkmark.circle.fill", color: GamingPalette.success, size: badgeSize)
+
+    case .failed:
+      feedbackBadgeIcon("exclamationmark.circle.fill", color: GamingPalette.destructive, size: badgeSize)
+    }
+  }
+
+  private func feedbackBadgeIcon(_ systemName: String, color: Color, size: CGFloat) -> some View {
+    Image(systemName: systemName)
+      .symbolRenderingMode(.palette)
+      .foregroundStyle(.white, color)
+      .font(.system(size: size))
+      .padding(7)
+  }
+
   @ViewBuilder
   private func buttonCell(_ button: ButtonConfig, size: CGFloat) -> some View {
     ZStack(alignment: .topTrailing) {
@@ -515,29 +844,40 @@ struct PanelView: View {
 
   @ViewBuilder
   private func contentButton(_ button: ButtonConfig, size: CGFloat) -> some View {
+    // 編集モード中はタップが「編集を開く」になるため、実行結果の表示は持ち越さない
+    let feedback = isEditMode ? nil : buttonFeedback[button.id]
+
     let core = Button {
       if isEditMode {
         editingButton = button
       } else if button.action.type == .openFolder {
         folderStack.append(button.id)
       } else {
-        connectionManager.execute(button.action)
+        executeButton(button)
       }
     } label: {
       VStack(spacing: Self.iconLabelSpacing(for: size)) {
         panelIcon(for: button, size: size)
         Text(button.label)
-          .font(.system(size: Self.labelFontSize(for: size), weight: .semibold))
+          .font(.system(size: labelFontSize(for: size), weight: .semibold))
           .foregroundStyle(GamingPalette.foreground)
           .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
       }
       .frame(width: size, height: size)
+      // 送信中は中身を淡くして、応答待ちであることを面全体で示す
+      .opacity(feedback == .running ? 0.55 : 1)
+      .overlay(alignment: .topLeading) {
+        feedbackBadge(for: feedback, cellSize: size)
+      }
       .streamDeckGlassTile(
         accentColor: themeStore.accentColor,
-        isEditing: isEditMode
+        isEditing: isEditMode,
+        feedback: feedback
       )
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: feedback)
     }
     .buttonStyle(PanelTileButtonStyle())
+    .accessibilityValue(feedback?.accessibilityDescription ?? "")
 
     // 通常モードでの長押し（編集モードへの切替）とドラッグ操作が競合しないよう、
     // ドラッグでの移動は編集モード中のみ有効にする
@@ -582,8 +922,8 @@ struct PanelView: View {
     min(max(cellSize * 0.1, 6), 12)
   }
 
-  private static func labelFontSize(for cellSize: CGFloat) -> CGFloat {
-    min(max(cellSize * 0.13, 10), 16)
+  private func labelFontSize(for cellSize: CGFloat) -> CGFloat {
+    min(max(cellSize * 0.13, minimumLabelFontSize), max(16, minimumLabelFontSize))
   }
 
   private static func iconLabelSpacing(for cellSize: CGFloat) -> CGFloat {
@@ -627,12 +967,47 @@ private struct PanelTileButtonStyle: ButtonStyle {
   }
 }
 
+/// パネルのボタンを押した結果をタイルへ返すための状態
+private enum ButtonExecutionFeedback: Equatable {
+  /// Macへ送信し、ackの応答を待っている
+  case running
+  case succeeded
+  case failed
+
+  /// VoiceOver向けの読み上げ文言
+  var accessibilityDescription: String {
+    switch self {
+    case .running: return "実行中"
+    case .succeeded: return "実行しました"
+    case .failed: return "実行に失敗しました"
+    }
+  }
+}
+
 private struct StreamDeckGlassTileModifier: ViewModifier {
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   let accentColor: Color
   let isEditing: Bool
   let isEmpty: Bool
+  let feedback: ButtonExecutionFeedback?
+
+  /// 実行結果が出ている間は、タイルの輪郭とグローの色でも成否が分かるようにする
+  private var outlineColor: Color {
+    switch feedback {
+    case .succeeded: return GamingPalette.success
+    case .failed: return GamingPalette.destructive
+    case .running, .none: return accentColor
+    }
+  }
+
+  private var outlineOpacity: Double {
+    switch feedback {
+    case .succeeded, .failed: return 0.95
+    case .running: return 0.6
+    case .none: return isEditing ? 0.8 : 0.34
+    }
+  }
 
   func body(content: Content) -> some View {
     content
@@ -677,7 +1052,7 @@ private struct StreamDeckGlassTileModifier: ViewModifier {
             LinearGradient(
               colors: [
                 Color.white.opacity(isEmpty ? 0.14 : 0.52),
-                accentColor.opacity(isEditing ? 0.8 : 0.34),
+                outlineColor.opacity(outlineOpacity),
                 Color.black.opacity(0.72)
               ],
               startPoint: .topLeading,
@@ -699,7 +1074,11 @@ private struct StreamDeckGlassTileModifier: ViewModifier {
           .padding(.top, 5)
       }
       .shadow(color: .black.opacity(isEmpty ? 0.2 : 0.48), radius: 10, y: 6)
-      .shadow(color: accentColor.opacity(isEmpty ? 0.08 : 0.2), radius: 14, y: 2)
+      .shadow(
+        color: outlineColor.opacity(feedback == nil ? (isEmpty ? 0.08 : 0.2) : 0.45),
+        radius: 14,
+        y: 2
+      )
   }
 }
 
@@ -707,13 +1086,15 @@ private extension View {
   func streamDeckGlassTile(
     accentColor: Color,
     isEditing: Bool = false,
-    isEmpty: Bool = false
+    isEmpty: Bool = false,
+    feedback: ButtonExecutionFeedback? = nil
   ) -> some View {
     modifier(
       StreamDeckGlassTileModifier(
         accentColor: accentColor,
         isEditing: isEditing,
-        isEmpty: isEmpty
+        isEmpty: isEmpty,
+        feedback: feedback
       )
     )
   }
