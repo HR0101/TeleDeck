@@ -18,6 +18,8 @@ enum GamingPalette {
   static let foreground = Color(hex: 0xE2E8F0)
   static let mutedForeground = Color(hex: 0x94A3B8)
   static let destructive = Color(hex: 0xEF4444)
+  /// アクションが正常に実行できたことを示す成功色
+  static let success = Color(hex: 0x22C55E)
 }
 
 extension Color {
