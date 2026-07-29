@@ -20,6 +20,12 @@ struct MainTabView: View {
   @State private var isClockImmersive = false
   /// 選択中タブのハイライトを、タブ間で滑らかに移動させるための名前空間
   @Namespace private var tabSelectionNamespace
+  /// キーボード画面でスワイプが効かない理由を一時的に示すヒントの表示状態
+  @State private var isShowingSwipeDisabledHint = false
+  @State private var swipeHintDismissWorkItem: DispatchWorkItem?
+
+  /// スワイプ不可のヒントを自動的に閉じるまでの時間
+  private static let swipeHintDuration: TimeInterval = 2.2
 
   var body: some View {
     VStack(spacing: 0) {
@@ -55,6 +61,11 @@ struct MainTabView: View {
           floatingSettingsButton
         }
       }
+      .overlay(alignment: .bottom) {
+        if isShowingSwipeDisabledHint {
+          swipeDisabledHint
+        }
+      }
       .simultaneousGesture(
         DragGesture(minimumDistance: 45)
           .onEnded { value in
@@ -81,7 +92,7 @@ struct MainTabView: View {
       }
     }
     .sheet(isPresented: $isShowingSettings) {
-      SettingsView(themeStore: themeStore)
+      SettingsView(themeStore: themeStore, connectionManager: connectionManager)
     }
   }
 
@@ -107,8 +118,16 @@ struct MainTabView: View {
   }
 
   private func switchTabBySwipe(_ horizontal: CGFloat, vertical: CGFloat) {
-    guard selectedTab != .keyboard,
-          abs(horizontal) > abs(vertical),
+    // キーボード画面はトラックパッドの3本指操作と競合するためスワイプ切替を行わない。
+    // 何も起きないと「効かない画面」に見えるため、代わりに理由をヒントとして出す
+    guard selectedTab != .keyboard else {
+      if abs(horizontal) > abs(vertical), abs(horizontal) > 45 {
+        showSwipeDisabledHint()
+      }
+      return
+    }
+
+    guard abs(horizontal) > abs(vertical),
           abs(horizontal) > 45 else { return }
     let order = themeStore.tabOrder
     guard let index = order.firstIndex(of: selectedTab) else { return }
@@ -117,6 +136,37 @@ struct MainTabView: View {
     withAnimation(.easeOut(duration: 0.2)) {
       selectedTab = order[nextIndex]
     }
+  }
+
+  private var swipeDisabledHint: some View {
+    Label("この画面はトラックパッド操作を優先しています。下のタブで切り替えてください", systemImage: "hand.draw")
+      .font(.caption.weight(.medium))
+      .foregroundStyle(GamingPalette.foreground)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 10)
+      .background(.ultraThinMaterial, in: Capsule())
+      .background(GamingPalette.card.opacity(0.85), in: Capsule())
+      .overlay(Capsule().stroke(themeStore.accentColor.opacity(0.45), lineWidth: 1))
+      .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+      .padding(.bottom, 12)
+      .transition(.move(edge: .bottom).combined(with: .opacity))
+      .accessibilityElement(children: .combine)
+  }
+
+  private func showSwipeDisabledHint() {
+    swipeHintDismissWorkItem?.cancel()
+
+    withAnimation(.easeOut(duration: 0.2)) {
+      isShowingSwipeDisabledHint = true
+    }
+
+    let workItem = DispatchWorkItem {
+      withAnimation(.easeIn(duration: 0.2)) {
+        isShowingSwipeDisabledHint = false
+      }
+    }
+    swipeHintDismissWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.swipeHintDuration, execute: workItem)
   }
 
   private var customTabBar: some View {
