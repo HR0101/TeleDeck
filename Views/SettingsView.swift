@@ -9,15 +9,22 @@ import SwiftUI
 
 struct SettingsView: View {
   @Bindable var themeStore: ThemeStore
+  /// 接続状態の表示と、手動での切断・再ペアリングを行うために受け取る
+  let connectionManager: ConnectionManager
   @Environment(\.dismiss) private var dismiss
 
-  init(themeStore: ThemeStore) {
+  @State private var isShowingUnpairConfirmation = false
+
+  init(themeStore: ThemeStore, connectionManager: ConnectionManager) {
     self.themeStore = themeStore
+    self.connectionManager = connectionManager
   }
 
   var body: some View {
     NavigationStack {
       Form {
+        connectionSection
+        displaySection
         appearanceSection
         backgroundSection
         accentColorSection
@@ -40,6 +47,100 @@ struct SettingsView: View {
         }
       }
     }
+  }
+
+  // MARK: - 接続
+
+  /// 接続先と接続状態、そして手動での切断・ペアリング解除をまとめる。
+  /// これまでペアリング解除がMac側にしか無く、iPadだけを手元に持っている場面で操作できなかった
+  private var connectionSection: some View {
+    Section {
+      LabeledContent("状態") {
+        HStack(spacing: 7) {
+          Circle()
+            .fill(connectionStatusColor)
+            .frame(width: 8, height: 8)
+          Text(connectionStatusText)
+            .foregroundStyle(GamingPalette.mutedForeground)
+        }
+      }
+      .foregroundStyle(GamingPalette.foreground)
+
+      Button {
+        connectionManager.connect()
+      } label: {
+        Label("再接続する", systemImage: "arrow.clockwise")
+      }
+      .foregroundStyle(themeStore.accentColor)
+      .disabled(connectionManager.isConnected)
+
+      Button(role: .destructive) {
+        isShowingUnpairConfirmation = true
+      } label: {
+        Label("ペアリングを解除", systemImage: "xmark.shield")
+      }
+      .foregroundStyle(GamingPalette.destructive)
+    } header: {
+      Text("接続")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    } footer: {
+      Text("ペアリングを解除すると保存済みの接続情報が消え、次回はMacのPIN入力からやり直します")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
+    .confirmationDialog(
+      "ペアリングを解除しますか？",
+      isPresented: $isShowingUnpairConfirmation,
+      titleVisibility: .visible
+    ) {
+      Button("解除", role: .destructive) {
+        connectionManager.unpair()
+        dismiss()
+      }
+      Button("キャンセル", role: .cancel) {}
+    } message: {
+      Text("保存済みの接続情報を破棄し、Macに表示されるPINで接続し直します。")
+    }
+  }
+
+  private var connectionStatusColor: Color {
+    switch connectionManager.state {
+    case .paired: return GamingPalette.success
+    case .failed: return GamingPalette.destructive
+    default: return themeStore.accentColor
+    }
+  }
+
+  private var connectionStatusText: String {
+    switch connectionManager.state {
+    case .paired: return "接続済み"
+    case .searching, .disconnected: return "Macを探しています"
+    case .resuming: return "再接続しています"
+    case .waitingForPairing: return "ペアリング待ち"
+    case .failed(let message): return message
+    }
+  }
+
+  // MARK: - 画面表示
+
+  private var displaySection: some View {
+    Section {
+      Toggle(isOn: $themeStore.keepsScreenAwake) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("画面を消灯しない")
+            .foregroundStyle(GamingPalette.foreground)
+          Text("卓上のデッキとして置いたままでも自動ロックしません。電池を節約する場合はオフにしてください")
+            .font(.caption)
+            .foregroundStyle(GamingPalette.mutedForeground)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .tint(themeStore.accentColor)
+    } header: {
+      Text("画面")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
   }
 
   // MARK: - 外観設定
@@ -168,5 +269,5 @@ struct SettingsView: View {
 }
 
 #Preview {
-  SettingsView(themeStore: ThemeStore())
+  SettingsView(themeStore: ThemeStore(), connectionManager: ConnectionManager())
 }
