@@ -65,6 +65,7 @@ final class ThemeStore {
     static let backgroundGlowEnabled = "themeStore.backgroundGlowEnabled"
     static let appIconGridColumns = "themeStore.appIconGridColumns"
     static let tabOrder = "themeStore.tabOrder"
+    static let keepsScreenAwake = "themeStore.keepsScreenAwake"
   }
 
   /// 「アプリ」タブのアイコングリッドの列数として選べる範囲。列数を減らすほどアイコンが大きく表示される
@@ -90,6 +91,12 @@ final class ThemeStore {
   /// 下部タブバーの表示順序。設定画面からドラッグで並び替えられる
   var tabOrder: [MainTab] {
     didSet { persistTabOrder() }
+  }
+
+  /// 卓上のデッキとして使う間に画面が消灯しないようにする。
+  /// 常時表示が本来の使い方のため既定値はON（電池を優先する場合は設定でOFFにできる）
+  var keepsScreenAwake: Bool {
+    didSet { persistKeepsScreenAwake() }
   }
 
   private let userDefaults: UserDefaults
@@ -119,6 +126,11 @@ final class ThemeStore {
 
     let storedColumns = userDefaults.integer(forKey: StorageKey.appIconGridColumns)
     appIconGridColumns = storedColumns == 0 ? 4 : storedColumns
+
+    // 常時表示がTeleDeckの本来の使い方のため、未保存時はONにする
+    keepsScreenAwake = userDefaults.object(forKey: StorageKey.keepsScreenAwake) == nil
+      ? true
+      : userDefaults.bool(forKey: StorageKey.keepsScreenAwake)
 
     if let storedTabOrderRawValues = userDefaults.array(forKey: StorageKey.tabOrder) as? [String] {
       let storedTabs = storedTabOrderRawValues.compactMap { MainTab(rawValue: $0) }
@@ -166,5 +178,9 @@ final class ThemeStore {
 
   private func persistTabOrder() {
     userDefaults.set(tabOrder.map(\.rawValue), forKey: StorageKey.tabOrder)
+  }
+
+  private func persistKeepsScreenAwake() {
+    userDefaults.set(keepsScreenAwake, forKey: StorageKey.keepsScreenAwake)
   }
 }
