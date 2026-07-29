@@ -44,15 +44,21 @@ struct KeyboardView: View {
 
   /// 現在ONになっている修飾キー（キー送信時にまとめて使い、送信後は自動でOFFに戻す）
   @State private var activeModifiers: Set<ModifierKey> = []
+  /// ダブルタップで固定した修飾キー。Cmdを押しっぱなしにするアプリスイッチャーのように、
+  /// 1回のキー送信では解除したくない操作のために、通常のトグルとは別に保持する
+  @State private var lockedModifiers: Set<ModifierKey> = []
 
-  /// タップ領域がHIGの44pt未満にならないようにするキーの最低の高さ
-  private static let minKeyHeight: CGFloat = 44
+  /// キーの文字サイズ。文字サイズ設定に追随させつつ、キー配列が崩れない範囲に収める
+  @ScaledMetric(relativeTo: .body) private var keyFontSize: CGFloat = 15
+  /// 英数/かなキーはラベルが2文字のため、通常キーよりわずかに小さくする
+  @ScaledMetric(relativeTo: .body) private var inputSourceKeyFontSize: CGFloat = 13
+  /// タップ領域がHIGの44pt未満にならないようにするキーの最低の高さ。
+  /// 文字を大きくした場合はキーの高さも一緒に伸ばす
+  @ScaledMetric(relativeTo: .body) private var minKeyHeight: CGFloat = 44
 
   var body: some View {
     VStack(spacing: 12) {
-      Text("キーボード＆トラックパッド（US配列）")
-        .font(.headline)
-        .foregroundStyle(GamingPalette.foreground)
+      header
         .padding(.top)
 
       VStack(spacing: 6) {
@@ -66,6 +72,26 @@ struct KeyboardView: View {
 
       trackpadSection
         .frame(maxHeight: .infinity)
+    }
+  }
+
+  // MARK: - ヘッダー
+
+  private var header: some View {
+    VStack(spacing: 6) {
+      Text("キーボード＆トラックパッド（US配列）")
+        .font(.headline)
+        .foregroundStyle(GamingPalette.foreground)
+
+      if connectionManager.isConnected {
+        Text("修飾キーはタップで1回のみ有効・ダブルタップで固定されます")
+          .font(.caption2)
+          .foregroundStyle(GamingPalette.mutedForeground)
+      } else {
+        Label("Macに接続されていません", systemImage: "wifi.slash")
+          .font(.caption.weight(.medium))
+          .foregroundStyle(GamingPalette.destructive)
+      }
     }
   }
 
@@ -185,9 +211,9 @@ struct KeyboardView: View {
       sendKey(key.keyName)
     } label: {
       Text(key.label)
-        .font(.system(size: 15))
+        .font(.system(size: keyFontSize))
         .foregroundStyle(GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
+        .frame(maxWidth: .infinity, minHeight: minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: false))
     .frame(maxWidth: .infinity)
@@ -196,19 +222,36 @@ struct KeyboardView: View {
   }
 
   private func modifierButton(_ modifier: ModifierKey, widthWeight: CGFloat = 1.5) -> some View {
-    let isActive = activeModifiers.contains(modifier)
+    let isLocked = lockedModifiers.contains(modifier)
+    let isActive = isLocked || activeModifiers.contains(modifier)
+
     return Button {
       toggleModifier(modifier)
     } label: {
-      Text(modifier.label)
-        .font(.system(size: 15))
-        .foregroundStyle(isActive ? Color.white : GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
+      // 固定中は錠前を添えて、1回で解除される通常のONと区別できるようにする
+      HStack(spacing: 3) {
+        Text(modifier.label)
+          .font(.system(size: keyFontSize))
+        if isLocked {
+          Image(systemName: "lock.fill")
+            .font(.system(size: 9, weight: .bold))
+        }
+      }
+      .foregroundStyle(isActive ? Color.white : GamingPalette.foreground)
+      .frame(maxWidth: .infinity, minHeight: minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: isActive))
+    // ダブルタップを先に判定させ、成立しなかった場合のみ通常のトグルとして扱う
+    .simultaneousGesture(
+      TapGesture(count: 2).onEnded {
+        toggleModifierLock(modifier)
+      }
+    )
     .frame(maxWidth: .infinity)
     .layoutPriority(widthWeight)
     .frame(minWidth: 32 * widthWeight)
+    .accessibilityValue(isLocked ? "固定中" : (isActive ? "オン" : "オフ"))
+    .accessibilityHint("ダブルタップで固定します")
   }
 
   /// macOSの専用英数/かなキーを、トグル中の修飾キーとは独立して送信するボタン
@@ -217,9 +260,9 @@ struct KeyboardView: View {
       sendInputSourceKey(keyName)
     } label: {
       Text(label)
-        .font(.system(size: 13))
+        .font(.system(size: inputSourceKeyFontSize))
         .foregroundStyle(GamingPalette.foreground)
-        .frame(maxWidth: .infinity, minHeight: Self.minKeyHeight)
+        .frame(maxWidth: .infinity, minHeight: minKeyHeight)
     }
     .buttonStyle(GamingKeyButtonStyle(accentColor: themeStore.accentColor, isActive: false))
     .frame(maxWidth: .infinity)
@@ -235,6 +278,13 @@ struct KeyboardView: View {
   }
 
   private func toggleModifier(_ modifier: ModifierKey) {
+    // 固定中のキーは、1回タップで固定を解除する（二段階でOFFにする手間を省く）
+    if lockedModifiers.contains(modifier) {
+      lockedModifiers.remove(modifier)
+      activeModifiers.remove(modifier)
+      return
+    }
+
     if activeModifiers.contains(modifier) {
       activeModifiers.remove(modifier)
     } else {
@@ -242,13 +292,26 @@ struct KeyboardView: View {
     }
   }
 
+  /// ダブルタップで修飾キーを固定する。固定中はキー送信後も解除されないため、
+  /// Cmdを押しっぱなしにするアプリスイッチャーや、連続したショートカット操作が行える
+  private func toggleModifierLock(_ modifier: ModifierKey) {
+    if lockedModifiers.contains(modifier) {
+      lockedModifiers.remove(modifier)
+      activeModifiers.remove(modifier)
+    } else {
+      lockedModifiers.insert(modifier)
+      activeModifiers.remove(modifier)
+    }
+  }
+
   /// Caps Lockはトグル状態自体をmacOS側が保持するため、単独キーとして送信する
   private func sendKey(_ keyName: String) {
-    var keys = activeModifiers.map(\.label)
+    var keys = lockedModifiers.union(activeModifiers).map(\.label)
     keys.append(keyName)
     connectionManager.execute(ActionPayload(type: .hotkey, keys: keys))
 
-    // iOS標準キーボードのShiftキーと同様、送信後は修飾キーを自動でOFFに戻す
+    // iOS標準キーボードのShiftキーと同様、送信後は修飾キーを自動でOFFに戻す。
+    // ただしダブルタップで固定したキーは、明示的に解除されるまで維持する
     activeModifiers.removeAll()
   }
 
