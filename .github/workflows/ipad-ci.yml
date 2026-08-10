@@ -1,0 +1,38 @@
+name: iPad CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ipad-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and test iPad app
+    runs-on: macos-26
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: xcodebuild -version
+
+      - name: Build and test on iPad Simulator
+        run: >-
+          xcodebuild
+          -project TeleDeck.xcodeproj
+          -scheme TeleDeck
+          -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5),OS=26.5'
+          -derivedDataPath "$RUNNER_TEMP/TeleDeckDerivedData"
+          CODE_SIGNING_ALLOWED=NO
+          CODE_SIGNING_REQUIRED=NO
+          test
