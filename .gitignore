@@ -79,6 +79,10 @@ iOSInjectionProject/
 
 # Mac OS
 .DS_Store
+diff_summary.txt
+.agents/
+.claude/
+skills-lock.json
 .AppleDouble
 .LSOverride
 
