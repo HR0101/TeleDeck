@@ -45,6 +45,9 @@ private struct DoubleFlipPanel: View {
 }
 
 private struct SingleFlipPanel: View {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   let value: Int
 
   var body: some View {
@@ -63,7 +66,12 @@ private struct SingleFlipPanel: View {
         )
     }
     // 少しゆっくりめにして、めくれる動きを見やすくする
-    .animation(.spring(response: 0.5, dampingFraction: 0.75), value: value)
+    .animation(
+      reduceMotion || themeStore.isEnergySavingModeEnabled
+        ? nil
+        : .spring(response: 0.5, dampingFraction: 0.75),
+      value: value
+    )
   }
 }
 

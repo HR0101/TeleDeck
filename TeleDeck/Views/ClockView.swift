@@ -6,7 +6,6 @@
 //  セグメントで切り替えて使える。
 //
 
-import Combine
 import SwiftUI
 
 /// 時間（分）を秒に変換する際の基準値
@@ -62,10 +61,9 @@ struct ClockView: View {
     _isImmersive = isImmersive
   }
 
-  private let clockTicker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-  private let burnInProtectionTicker = Timer.publish(
-    every: burnInProtectionInterval, on: .main, in: .common
-  ).autoconnect()
+  private var shouldReduceMotion: Bool {
+    reduceMotion || themeStore.isEnergySavingModeEnabled
+  }
 
   var body: some View {
     GeometryReader { proxy in
@@ -104,15 +102,17 @@ struct ClockView: View {
       )
     }
     .ignoresSafeArea()
-    .onReceive(clockTicker) { tickedDate in
-      now = tickedDate
-      if areControlsVisible,
-         tickedDate.timeIntervalSince(lastInteraction) >= clockControlsAutoHideDelay {
-        hideControls()
-      }
+    // 通常時は秒単位、低電力表示中は分単位だけ時刻を更新する。
+    .task(id: themeStore.isEnergySavingModeEnabled) {
+      await updateCurrentTimeUntilCancelled()
     }
-    .onReceive(burnInProtectionTicker) { _ in
-      shiftClockPosition()
+    // コントロールの自動非表示は毎秒タイマーではなく、操作ごとの1回だけの待機で処理する。
+    .task(id: lastInteraction) {
+      await hideControlsAfterDelay()
+    }
+    // 低電力表示中・操作コントロール表示中は焼き付き防止の位置アニメーションを停止する。
+    .task(id: shouldRunBurnInProtection) {
+      await runBurnInProtectionUntilCancelled()
     }
   }
 
@@ -144,18 +144,23 @@ struct ClockView: View {
           }
           .pickerStyle(.segmented)
           .frame(width: 300)
+          .disabled(themeStore.isEnergySavingModeEnabled)
+
+          if themeStore.isEnergySavingModeEnabled {
+            Label("低電力モード中はデジタル表示になります", systemImage: "leaf.fill")
+              .font(.caption.weight(.medium))
+              .foregroundStyle(GamingPalette.success)
+          }
         }
       }
 
       Group {
-        switch clockStyle {
-        case .digital:
+        if themeStore.isEnergySavingModeEnabled {
           Text(
             now,
             format: .dateTime
               .hour(.twoDigits(amPM: .omitted))
               .minute(.twoDigits)
-              .second(.twoDigits)
           )
           .lineLimit(1)
           .minimumScaleFactor(0.5)
@@ -171,49 +176,75 @@ struct ClockView: View {
           )
           .monospacedDigit()
           .tracking(-2)
-          .foregroundStyle(
-            LinearGradient(
-              colors: [GamingPalette.foreground, themeStore.accentColor],
-              startPoint: .top,
-              endPoint: .bottom
+          .foregroundStyle(GamingPalette.foreground)
+        } else {
+          switch clockStyle {
+          case .digital:
+            Text(
+              now,
+              format: .dateTime
+                .hour(.twoDigits(amPM: .omitted))
+                .minute(.twoDigits)
+                .second(.twoDigits)
             )
-          )
-          .shadow(color: themeStore.accentColor.opacity(0.35), radius: 22)
-        case .flip:
-          FlipClockView(date: now)
-            .scaleEffect(areControlsVisible ? 0.75 : 1.0)
-            .animation(
-              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
-              value: areControlsVisible
+            .lineLimit(1)
+            .minimumScaleFactor(0.5)
+            .font(
+              .system(
+                size: min(
+                  max(size.width * (areControlsVisible ? 0.16 : 0.25), areControlsVisible ? 84 : 120),
+                  areControlsVisible ? 176 : 260
+                ),
+                weight: .medium,
+                design: .rounded
+              )
             )
-            .padding(.vertical, areControlsVisible ? 0 : 20)
-        case .analog:
-          AnalogClockView(date: now)
-            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
-            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
-            .animation(
-              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
-              value: areControlsVisible
+            .monospacedDigit()
+            .tracking(-2)
+            .foregroundStyle(
+              LinearGradient(
+                colors: [GamingPalette.foreground, themeStore.accentColor],
+                startPoint: .top,
+                endPoint: .bottom
+              )
             )
-            .padding(.vertical, areControlsVisible ? 0 : 20)
-        case .relax:
-          RelaxingClockView(date: now)
-            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
-            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
-            .animation(
-              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
-              value: areControlsVisible
-            )
-            .padding(.vertical, areControlsVisible ? 0 : 20)
-        case .cyber:
-          CyberClockView(date: now)
-            .scaleEffect(areControlsVisible ? 0.35 : 1.0)
-            .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
-            .animation(
-              reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
-              value: areControlsVisible
-            )
-            .padding(.vertical, areControlsVisible ? 0 : 20)
+            .shadow(color: themeStore.accentColor.opacity(0.35), radius: 22)
+          case .flip:
+            FlipClockView(date: now)
+              .scaleEffect(areControlsVisible ? 0.75 : 1.0)
+              .animation(
+                shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1),
+                value: areControlsVisible
+              )
+              .padding(.vertical, areControlsVisible ? 0 : 20)
+          case .analog:
+            AnalogClockView(date: now)
+              .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+              .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+              .animation(
+                shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1),
+                value: areControlsVisible
+              )
+              .padding(.vertical, areControlsVisible ? 0 : 20)
+          case .relax:
+            RelaxingClockView(date: now)
+              .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+              .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+              .animation(
+                shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1),
+                value: areControlsVisible
+              )
+              .padding(.vertical, areControlsVisible ? 0 : 20)
+          case .cyber:
+            CyberClockView(date: now)
+              .scaleEffect(areControlsVisible ? 0.35 : 1.0)
+              .frame(width: areControlsVisible ? 224 : 640, height: areControlsVisible ? 224 : 640)
+              .animation(
+                shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1),
+                value: areControlsVisible
+              )
+              .padding(.vertical, areControlsVisible ? 0 : 20)
+          }
         }
       }
 
@@ -225,15 +256,62 @@ struct ClockView: View {
     .padding(.top, areControlsVisible ? 64 : 0)
     .offset(x: clockOffsetX, y: clockOffsetY)
     .animation(
-      reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1),
+      shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1),
       value: areControlsVisible
     )
+  }
+
+  private func updateCurrentTimeUntilCancelled() async {
+    let updateInterval: UInt64 = themeStore.isEnergySavingModeEnabled
+      ? 60_000_000_000
+      : 1_000_000_000
+
+    while !Task.isCancelled {
+      now = Date()
+      do {
+        try await Task.sleep(nanoseconds: updateInterval)
+      } catch {
+        return
+      }
+    }
+  }
+
+  private func hideControlsAfterDelay() async {
+    do {
+      try await Task.sleep(nanoseconds: UInt64(clockControlsAutoHideDelay * 1_000_000_000))
+    } catch {
+      return
+    }
+    guard !Task.isCancelled, areControlsVisible else { return }
+    hideControls()
+  }
+
+  private func runBurnInProtectionUntilCancelled() async {
+    guard shouldRunBurnInProtection else {
+      clockOffsetX = 0
+      clockOffsetY = 0
+      return
+    }
+
+    while !Task.isCancelled {
+      do {
+        try await Task.sleep(nanoseconds: UInt64(burnInProtectionInterval * 1_000_000_000))
+      } catch {
+        return
+      }
+      guard !Task.isCancelled else { return }
+      shiftClockPosition()
+    }
+  }
+
+  private var shouldRunBurnInProtection: Bool {
+    !themeStore.isEnergySavingModeEnabled && !areControlsVisible
   }
 
   private func revealControls() {
     lastInteraction = Date()
     guard !areControlsVisible else { return }
-    withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
+    withAnimation(shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1)) {
       areControlsVisible = true
       isImmersive = false
     }
@@ -241,7 +319,7 @@ struct ClockView: View {
 
   private func hideControls() {
     guard areControlsVisible else { return }
-    withAnimation(reduceMotion ? .easeOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 1)) {
+    withAnimation(shouldReduceMotion ? nil : .spring(response: 0.4, dampingFraction: 1)) {
       areControlsVisible = false
       isImmersive = true
     }
@@ -424,6 +502,9 @@ private struct PomodoroToolView: View {
 // MARK: - ツール用ボタンスタイル
 
 private struct PrimaryActionButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var accentColor: Color
 
   func makeBody(configuration: Configuration) -> some View {
@@ -436,13 +517,23 @@ private struct PrimaryActionButtonStyle: ButtonStyle {
         RoundedRectangle(cornerRadius: 16, style: .continuous)
           .fill(accentColor.opacity(configuration.isPressed ? 0.7 : 1.0))
       )
-      .shadow(color: accentColor.opacity(0.4), radius: configuration.isPressed ? 4 : 12, y: configuration.isPressed ? 2 : 6)
+      .shadow(
+        color: themeStore.isEnergySavingModeEnabled ? .clear : accentColor.opacity(0.4),
+        radius: themeStore.isEnergySavingModeEnabled ? 0 : (configuration.isPressed ? 4 : 12),
+        y: themeStore.isEnergySavingModeEnabled ? 0 : (configuration.isPressed ? 2 : 6)
+      )
       .scaleEffect(configuration.isPressed ? 0.96 : 1)
-      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.15),
+        value: configuration.isPressed
+      )
   }
 }
 
 private struct SecondaryActionButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .font(.title3.weight(.bold))
@@ -458,7 +549,10 @@ private struct SecondaryActionButtonStyle: ButtonStyle {
           .stroke(GamingPalette.mutedForeground.opacity(0.2), lineWidth: 1)
       )
       .scaleEffect(configuration.isPressed ? 0.96 : 1)
-      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.15),
+        value: configuration.isPressed
+      )
   }
 }
 

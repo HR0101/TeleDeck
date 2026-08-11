@@ -44,16 +44,37 @@ struct CyberClockView: View {
     }
     .frame(width: 640, height: 640)
     .onAppear {
-      guard !reduceMotion else { return }
-      withAnimation(.linear(duration: 40).repeatForever(autoreverses: false)) {
-        outerRingRotation = 360
+      startAnimationsIfNeeded()
+    }
+    .onChange(of: themeStore.isEnergySavingModeEnabled) { _, isEnabled in
+      if isEnabled {
+        stopAnimations()
+      } else {
+        startAnimationsIfNeeded()
       }
-      withAnimation(.linear(duration: 26).repeatForever(autoreverses: false)) {
-        innerRingRotation = 360
-      }
-      withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
-        scanAngle = 360
-      }
+    }
+  }
+
+  private func startAnimationsIfNeeded() {
+    guard !reduceMotion, !themeStore.isEnergySavingModeEnabled else { return }
+    withAnimation(.linear(duration: 40).repeatForever(autoreverses: false)) {
+      outerRingRotation = 360
+    }
+    withAnimation(.linear(duration: 26).repeatForever(autoreverses: false)) {
+      innerRingRotation = 360
+    }
+    withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
+      scanAngle = 360
+    }
+  }
+
+  private func stopAnimations() {
+    var transaction = Transaction()
+    transaction.animation = nil
+    withTransaction(transaction) {
+      outerRingRotation = 0
+      innerRingRotation = 0
+      scanAngle = 0
     }
   }
 
