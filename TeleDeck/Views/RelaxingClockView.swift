@@ -62,17 +62,38 @@ struct RelaxingClockView: View {
     }
     .frame(width: 640, height: 640)
     .onAppear {
-      guard !reduceMotion else { return }
-      // それぞれ異なるテンポでゆったりとアニメーションさせる（マインドフルネスの呼吸のリズムに近い速度）
-      withAnimation(.easeInOut(duration: 7.0).repeatForever(autoreverses: true)) {
-        phase1 = true
+      startAnimationsIfNeeded()
+    }
+    .onChange(of: themeStore.isEnergySavingModeEnabled) { _, isEnabled in
+      if isEnabled {
+        stopAnimations()
+      } else {
+        startAnimationsIfNeeded()
       }
-      withAnimation(.easeInOut(duration: 9.0).repeatForever(autoreverses: true)) {
-        phase2 = true
-      }
-      withAnimation(.easeInOut(duration: 11.0).repeatForever(autoreverses: true)) {
-        phase3 = true
-      }
+    }
+  }
+
+  private func startAnimationsIfNeeded() {
+    guard !reduceMotion, !themeStore.isEnergySavingModeEnabled else { return }
+    // それぞれ異なるテンポでゆったりとアニメーションさせる（マインドフルネスの呼吸のリズムに近い速度）
+    withAnimation(.easeInOut(duration: 7.0).repeatForever(autoreverses: true)) {
+      phase1 = true
+    }
+    withAnimation(.easeInOut(duration: 9.0).repeatForever(autoreverses: true)) {
+      phase2 = true
+    }
+    withAnimation(.easeInOut(duration: 11.0).repeatForever(autoreverses: true)) {
+      phase3 = true
+    }
+  }
+
+  private func stopAnimations() {
+    var transaction = Transaction()
+    transaction.animation = nil
+    withTransaction(transaction) {
+      phase1 = false
+      phase2 = false
+      phase3 = false
     }
   }
 }

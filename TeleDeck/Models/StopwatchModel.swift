@@ -16,6 +16,7 @@ final class StopwatchModel {
   private var timer: Timer?
 
   private static let tickInterval: TimeInterval = 1.0
+  private static let tickTolerance: TimeInterval = 0.1
 
   func start() {
     guard runState != .running else { return }
@@ -37,9 +38,11 @@ final class StopwatchModel {
 
   private func scheduleTimer() {
     invalidateTimer()
-    timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
+    let timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
       self?.elapsedSeconds += 1
     }
+    timer.tolerance = Self.tickTolerance
+    self.timer = timer
   }
 
   private func invalidateTimer() {

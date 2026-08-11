@@ -48,6 +48,10 @@ struct PanelView: View {
   /// エラーバナーを自動的に閉じるまでの時間
   private static let errorBannerDuration: TimeInterval = 4
 
+  private var shouldReduceMotion: Bool {
+    reduceMotion || themeStore.isEnergySavingModeEnabled
+  }
+
   /// 現在のフォルダー階層に属するボタンのみ
   private var visibleButtons: [ButtonConfig] {
     profileStore.activeProfile.buttons.filter { $0.folderId == folderStack.last }
@@ -237,7 +241,7 @@ struct PanelView: View {
   }
 
   private func toggleSidebar() {
-    if reduceMotion {
+    if shouldReduceMotion {
       isSidebarVisible.toggle()
     } else {
       withAnimation(.easeOut(duration: 0.2)) {
@@ -542,7 +546,7 @@ struct PanelView: View {
 
   private var editModeButton: some View {
     Button {
-      withAnimation(.easeOut(duration: 0.18)) {
+      withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.18)) {
         isEditMode.toggle()
       }
     } label: {
@@ -706,7 +710,7 @@ struct PanelView: View {
   private func clearFeedback(for buttonId: UUID, after delay: TimeInterval) {
     DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
       guard buttonFeedback[buttonId] != .running else { return }
-      withAnimation(.easeOut(duration: 0.2)) {
+      withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.2)) {
         buttonFeedback[buttonId] = nil
       }
     }
@@ -715,7 +719,7 @@ struct PanelView: View {
   private func showExecutionError(_ message: String) {
     errorDismissWorkItem?.cancel()
 
-    withAnimation(.easeOut(duration: 0.2)) {
+    withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.2)) {
       executionErrorMessage = message
     }
 
@@ -729,7 +733,7 @@ struct PanelView: View {
   private func dismissExecutionError() {
     errorDismissWorkItem?.cancel()
     errorDismissWorkItem = nil
-    withAnimation(.easeIn(duration: 0.2)) {
+    withAnimation(shouldReduceMotion ? nil : .easeIn(duration: 0.2)) {
       executionErrorMessage = nil
     }
   }
@@ -861,7 +865,11 @@ struct PanelView: View {
         Text(button.label)
           .font(.system(size: labelFontSize(for: size), weight: .semibold))
           .foregroundStyle(GamingPalette.foreground)
-          .shadow(color: .black.opacity(0.65), radius: 2, y: 1)
+          .shadow(
+            color: themeStore.isEnergySavingModeEnabled ? .clear : .black.opacity(0.65),
+            radius: themeStore.isEnergySavingModeEnabled ? 0 : 2,
+            y: themeStore.isEnergySavingModeEnabled ? 0 : 1
+          )
       }
       .frame(width: size, height: size)
       // 送信中は中身を淡くして、応答待ちであることを面全体で示す
@@ -874,7 +882,7 @@ struct PanelView: View {
         isEditing: isEditMode,
         feedback: feedback
       )
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: feedback)
+      .animation(shouldReduceMotion ? nil : .easeOut(duration: 0.18), value: feedback)
     }
     .buttonStyle(PanelTileButtonStyle())
     .accessibilityValue(feedback?.accessibilityDescription ?? "")
@@ -950,20 +958,32 @@ struct PanelView: View {
 }
 
 private struct PanelToolbarButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .scaleEffect(configuration.isPressed ? 0.97 : 1)
       .opacity(configuration.isPressed ? 0.84 : 1)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.12),
+        value: configuration.isPressed
+      )
   }
 }
 
 private struct PanelTileButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .scaleEffect(configuration.isPressed ? 0.96 : 1)
       .opacity(configuration.isPressed ? 0.82 : 1)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.12),
+        value: configuration.isPressed
+      )
   }
 }
 
@@ -985,6 +1005,7 @@ private enum ButtonExecutionFeedback: Equatable {
 }
 
 private struct StreamDeckGlassTileModifier: ViewModifier {
+  @Environment(ThemeStore.self) private var themeStore
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   let accentColor: Color
@@ -1009,76 +1030,92 @@ private struct StreamDeckGlassTileModifier: ViewModifier {
     }
   }
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    content
-      .background {
-        ZStack {
+    if themeStore.isEnergySavingModeEnabled {
+      content
+        .background {
           RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(
+            .fill(isEmpty ? GamingPalette.backgroundElevated : GamingPalette.card)
+        }
+        .overlay {
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(
+              outlineColor.opacity(outlineOpacity),
+              style: StrokeStyle(lineWidth: isEditing ? 1.5 : 1.0, dash: isEmpty ? [5, 4] : [])
+            )
+        }
+    } else {
+      content
+        .background {
+          ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .fill(
+                LinearGradient(
+                  colors: [
+                    Color.white.opacity(isEmpty ? 0.035 : 0.10),
+                    GamingPalette.card.opacity(isEmpty ? 0.34 : 0.88),
+                    Color.black.opacity(isEmpty ? 0.22 : 0.58)
+                  ],
+                  startPoint: .topLeading,
+                  endPoint: .bottomTrailing
+                )
+              )
+
+            if !reduceTransparency {
+              RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .opacity(isEmpty ? 0.16 : 0.34)
+            }
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .fill(
+                LinearGradient(
+                  stops: [
+                    .init(color: .white.opacity(isEmpty ? 0.04 : 0.22), location: 0),
+                    .init(color: .white.opacity(isEmpty ? 0.01 : 0.055), location: 0.38),
+                    .init(color: .clear, location: 0.62)
+                  ],
+                  startPoint: .top,
+                  endPoint: .bottom
+                )
+              )
+          }
+        }
+        .overlay {
+          RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .stroke(
               LinearGradient(
                 colors: [
-                  Color.white.opacity(isEmpty ? 0.035 : 0.10),
-                  GamingPalette.card.opacity(isEmpty ? 0.34 : 0.88),
-                  Color.black.opacity(isEmpty ? 0.22 : 0.58)
+                  Color.white.opacity(isEmpty ? 0.14 : 0.52),
+                  outlineColor.opacity(outlineOpacity),
+                  Color.black.opacity(0.72)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
-              )
-            )
-
-          if !reduceTransparency {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-              .fill(.ultraThinMaterial)
-              .opacity(isEmpty ? 0.16 : 0.34)
-          }
-
-          RoundedRectangle(cornerRadius: 16, style: .continuous)
-            .fill(
-              LinearGradient(
-                stops: [
-                  .init(color: .white.opacity(isEmpty ? 0.04 : 0.22), location: 0),
-                  .init(color: .white.opacity(isEmpty ? 0.01 : 0.055), location: 0.38),
-                  .init(color: .clear, location: 0.62)
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-              )
+              ),
+              style: StrokeStyle(lineWidth: isEditing ? 1.5 : 1.1, dash: isEmpty ? [5, 4] : [])
             )
         }
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
-          .stroke(
-            LinearGradient(
-              colors: [
-                Color.white.opacity(isEmpty ? 0.14 : 0.52),
-                outlineColor.opacity(outlineOpacity),
-                Color.black.opacity(0.72)
-              ],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            ),
-            style: StrokeStyle(lineWidth: isEditing ? 1.5 : 1.1, dash: isEmpty ? [5, 4] : [])
-          )
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: 13, style: .continuous)
-          .inset(by: 3)
-          .stroke(Color.white.opacity(isEmpty ? 0.025 : 0.075), lineWidth: 0.8)
-      }
-      .overlay(alignment: .top) {
-        Capsule()
-          .fill(Color.white.opacity(isEmpty ? 0.08 : 0.34))
-          .frame(width: 34, height: 2)
-          .blur(radius: 0.4)
-          .padding(.top, 5)
-      }
-      .shadow(color: .black.opacity(isEmpty ? 0.2 : 0.48), radius: 10, y: 6)
-      .shadow(
-        color: outlineColor.opacity(feedback == nil ? (isEmpty ? 0.08 : 0.2) : 0.45),
-        radius: 14,
-        y: 2
-      )
+        .overlay {
+          RoundedRectangle(cornerRadius: 13, style: .continuous)
+            .inset(by: 3)
+            .stroke(Color.white.opacity(isEmpty ? 0.025 : 0.075), lineWidth: 0.8)
+        }
+        .overlay(alignment: .top) {
+          Capsule()
+            .fill(Color.white.opacity(isEmpty ? 0.08 : 0.34))
+            .frame(width: 34, height: 2)
+            .blur(radius: 0.4)
+            .padding(.top, 5)
+        }
+        .shadow(color: .black.opacity(isEmpty ? 0.2 : 0.48), radius: 10, y: 6)
+        .shadow(
+          color: outlineColor.opacity(feedback == nil ? (isEmpty ? 0.08 : 0.2) : 0.45),
+          radius: 14,
+          y: 2
+        )
+    }
   }
 }
 

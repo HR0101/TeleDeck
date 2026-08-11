@@ -28,6 +28,7 @@ final class CountdownTimerModel {
   private var timer: Timer?
 
   private static let tickInterval: TimeInterval = 1.0
+  private static let tickTolerance: TimeInterval = 0.1
 
   init(totalSeconds: Int) {
     self.totalSeconds = totalSeconds
@@ -65,9 +66,11 @@ final class CountdownTimerModel {
 
   private func scheduleTimer() {
     invalidateTimer()
-    timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
+    let timer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in
       self?.tick()
     }
+    timer.tolerance = Self.tickTolerance
+    self.timer = timer
   }
 
   private func tick() {

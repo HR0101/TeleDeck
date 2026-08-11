@@ -5,6 +5,7 @@
 //  Created by hara ryuto   on 2026/07/12.
 //
 
+import Foundation
 import SwiftUI
 import UIKit
 
@@ -62,10 +63,11 @@ struct ContentView: View {
     .preferredColorScheme(themeStore.preferredColorScheme)
     .tint(themeStore.accentColor)
     .onAppear {
-      connectionManager.connect()
+      applySystemLowPowerMode()
+      connectionManager.setApplicationActive(scenePhase == .active)
       // 既にペアリング済みで起動した場合、バナーを一瞬たりとも点滅させないよう初期状態を合わせる
       updateReconnectBannerVisibility(for: connectionManager.state)
-      applyIdleTimerSetting()
+      applyIdleTimerSetting(isActive: scenePhase == .active)
     }
     .onChange(of: connectionManager.state) { _, newState in
       updateReconnectBannerVisibility(for: newState)
@@ -74,9 +76,18 @@ struct ContentView: View {
     .onChange(of: themeStore.keepsScreenAwake) { _, _ in
       applyIdleTimerSetting()
     }
+    .onChange(of: themeStore.followsSystemLowPowerMode) { _, _ in
+      connectionManager.setLowPowerModeEnabled(themeStore.isEnergySavingModeEnabled)
+      applyIdleTimerSetting(isActive: scenePhase == .active)
+    }
     .onChange(of: scenePhase) { _, newPhase in
-      // バックグラウンドでは抑止を解除し、TeleDeckを離れた後まで電池を消費しないようにする
-      applyIdleTimerSetting(isActive: newPhase == .active)
+      let isActive = newPhase == .active
+      // バックグラウンドでは画面点灯の抑止とネットワーク処理を止め、復帰時だけ再接続する
+      applyIdleTimerSetting(isActive: isActive)
+      connectionManager.setApplicationActive(isActive)
+    }
+    .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)) { _ in
+      applySystemLowPowerMode()
     }
     .fullScreenCover(isPresented: $isShowingStandaloneClock) {
       standaloneClock
@@ -85,7 +96,16 @@ struct ContentView: View {
 
   /// 設定と現在のシーン状態から、画面の自動ロックを抑止するかどうかを反映する
   private func applyIdleTimerSetting(isActive: Bool = true) {
-    UIApplication.shared.isIdleTimerDisabled = themeStore.keepsScreenAwake && isActive
+    UIApplication.shared.isIdleTimerDisabled = themeStore.keepsScreenAwake
+      && isActive
+      && !themeStore.isEnergySavingModeEnabled
+  }
+
+  /// iPadの低電力モードを表示と接続管理へ同時に反映する。
+  private func applySystemLowPowerMode() {
+    themeStore.setSystemLowPowerModeEnabled(ProcessInfo.processInfo.isLowPowerModeEnabled)
+    connectionManager.setLowPowerModeEnabled(themeStore.isEnergySavingModeEnabled)
+    applyIdleTimerSetting(isActive: scenePhase == .active)
   }
 
   /// 再接続バナーの表示状態を接続状態に合わせて更新する。
@@ -143,7 +163,7 @@ struct ContentView: View {
     .overlay(Capsule().stroke(themeStore.accentColor.opacity(0.5), lineWidth: 1))
     .padding(.top, 8)
     .transition(.move(edge: .top).combined(with: .opacity))
-    .animation(.easeOut(duration: 0.2), value: isShowingReconnectBanner)
+    .animation(themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.2), value: isShowingReconnectBanner)
   }
 }
 
@@ -174,7 +194,10 @@ private struct LandscapeLayoutGuard<Content: View>: View {
             .zIndex(10)
         }
       }
-      .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: isPortrait)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.18),
+        value: isPortrait
+      )
     }
   }
 

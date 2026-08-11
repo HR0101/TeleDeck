@@ -36,12 +36,17 @@ extension Color {
 /// 中央付近にアクセントカラーのグロー（ぼかし光）を淡く配置し、単調な単色背景にならないようにする。
 /// モーション低減設定が有効な場合はグローのアニメーションを止める。
 struct GamingBackground: View {
+  @Environment(ThemeStore.self) private var themeStore
   var accentColor: Color = GamingPalette.muted
   /// 電池消費の大きいぼかしグローを表示するかどうか。OFF時は静的な黒ベースの背景だけを描画する。
   var showsGlow = false
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var animate = false
+
+  private var shouldShowGlow: Bool {
+    showsGlow && themeStore.shouldShowBackgroundGlow
+  }
 
   var body: some View {
     ZStack {
@@ -51,7 +56,7 @@ struct GamingBackground: View {
         endPoint: .bottomTrailing
       )
 
-      if showsGlow {
+      if shouldShowGlow {
         Circle()
           .fill(accentColor.opacity(0.28))
           .frame(width: 420, height: 420)
@@ -69,7 +74,7 @@ struct GamingBackground: View {
     .onAppear {
       startGlowAnimationIfNeeded()
     }
-    .onChange(of: showsGlow) { _, enabled in
+    .onChange(of: shouldShowGlow) { _, enabled in
       if enabled {
         startGlowAnimationIfNeeded()
       } else {
@@ -83,7 +88,7 @@ struct GamingBackground: View {
   }
 
   private func startGlowAnimationIfNeeded() {
-    guard showsGlow, !reduceMotion else { return }
+    guard shouldShowGlow, !reduceMotion else { return }
     withAnimation(.easeInOut(duration: 10).repeatForever(autoreverses: true)) {
       animate = true
     }
@@ -92,25 +97,39 @@ struct GamingBackground: View {
 
 /// カード状の面（ボタン・行など）に共通のガラス風グロー装飾を与えるモディファイア
 private struct GamingCardModifier: ViewModifier {
+  @Environment(ThemeStore.self) private var themeStore
   var accentColor: Color
   var cornerRadius: CGFloat
   var isEmphasized: Bool
 
+  @ViewBuilder
   func body(content: Content) -> some View {
-    content
-      .background(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .fill(.ultraThinMaterial)
-      )
-      .background(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .fill(GamingPalette.card.opacity(0.55))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .stroke(accentColor.opacity(isEmphasized ? 0.9 : 0.45), lineWidth: isEmphasized ? 1.5 : 1)
-      )
-      .shadow(color: accentColor.opacity(isEmphasized ? 0.5 : 0.25), radius: isEmphasized ? 14 : 8)
+    if themeStore.isEnergySavingModeEnabled {
+      content
+        .background(
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(GamingPalette.card)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(accentColor.opacity(isEmphasized ? 0.8 : 0.35), lineWidth: 1)
+        )
+    } else {
+      content
+        .background(
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(.ultraThinMaterial)
+        )
+        .background(
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(GamingPalette.card.opacity(0.55))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .stroke(accentColor.opacity(isEmphasized ? 0.9 : 0.45), lineWidth: isEmphasized ? 1.5 : 1)
+        )
+        .shadow(color: accentColor.opacity(isEmphasized ? 0.5 : 0.25), radius: isEmphasized ? 14 : 8)
+    }
   }
 }
 
@@ -123,6 +142,9 @@ extension View {
 
 /// ボタン全般に使う、押下時にグローが強まるゲーミング風ButtonStyle
 struct GamingButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var accentColor: Color
   var cornerRadius: CGFloat = 14
 
@@ -137,8 +159,16 @@ struct GamingButtonStyle: ButtonStyle {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
           .stroke(accentColor.opacity(configuration.isPressed ? 0.95 : 0.5), lineWidth: 1.2)
       )
-      .shadow(color: accentColor.opacity(configuration.isPressed ? 0.65 : 0.3), radius: configuration.isPressed ? 12 : 6)
+      .shadow(
+        color: themeStore.isEnergySavingModeEnabled
+          ? .clear
+          : accentColor.opacity(configuration.isPressed ? 0.65 : 0.3),
+        radius: themeStore.isEnergySavingModeEnabled ? 0 : (configuration.isPressed ? 12 : 6)
+      )
       .scaleEffect(configuration.isPressed ? 0.97 : 1)
-      .animation(.easeOut(duration: 0.15), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.15),
+        value: configuration.isPressed
+      )
   }
 }
