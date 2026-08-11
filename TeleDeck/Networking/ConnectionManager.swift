@@ -43,7 +43,7 @@ final class ConnectionManager {
   /// Macから最新のコピー履歴一覧が届いたときに呼ばれる（新規コピー検知時・取得要求への応答の両方でこの経路を通る）
   var onClipboardHistory: (([ClipboardHistoryEntry]) -> Void)?
 
-  private let bonjourClient: BonjourClient
+  private let bonjourClient: any BonjourClientProtocol
   private var pendingRequests: [String: (Result<Void, Error>) -> Void] = [:]
   private var pendingTabsCompletion: (([TabInfo], [MacApplicationInfo]) -> Void)?
   private var pendingApplicationsCompletion: (([MacApplicationInfo]) -> Void)?
@@ -55,15 +55,31 @@ final class ConnectionManager {
   private var reconnectAttempt = 0
   private var reconnectWorkItem: DispatchWorkItem?
   private var keepAliveTimer: Timer?
+  private var trackpadFlushWorkItem: DispatchWorkItem?
+  private var pendingTrackpadMove = (dx: 0.0, dy: 0.0)
+  private var pendingTrackpadScroll = (dx: 0.0, dy: 0.0)
+  private var isApplicationActive = false
+  private var isLowPowerModeEnabled: Bool
+  private var isTransportConnected = false
 
   private static let maxReconnectDelay: TimeInterval = 30
-  private static let keepAliveInterval: TimeInterval = 20
+  private static let keepAliveInterval: TimeInterval = 120
+  private static let keepAliveTolerance: TimeInterval = 30
+  private static let normalTrackpadSendInterval: TimeInterval = 1.0 / 60.0
+  private static let lowPowerTrackpadSendInterval: TimeInterval = 1.0 / 30.0
   /// ack（実行結果）を待つ上限時間。Macが応答できない状態でも、
   /// UIが「実行中」のまま固まらないようにするために設ける
   private static let requestTimeout: TimeInterval = 5
 
-  init() {
-    bonjourClient = BonjourClient()
+  /// Keep-Aliveが現在動作中か。接続ライフサイクルの診断とテストに利用する。
+  var isKeepAliveRunning: Bool { keepAliveTimer != nil }
+
+  init(
+    bonjourClient: any BonjourClientProtocol = BonjourClient(),
+    isLowPowerModeEnabled: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+  ) {
+    self.bonjourClient = bonjourClient
+    self.isLowPowerModeEnabled = isLowPowerModeEnabled
 
     bonjourClient.onConnected = { [weak self] in
       self?.handleConnected()
@@ -79,18 +95,78 @@ final class ConnectionManager {
     }
   }
 
+  deinit {
+    reconnectWorkItem?.cancel()
+    keepAliveTimer?.invalidate()
+    trackpadFlushWorkItem?.cancel()
+    bonjourClient.stop()
+  }
+
   /// Mac探索〜WebSocket接続を開始する
   func connect() {
+    guard isApplicationActive else { return }
     isManuallyDisconnected = false
     reconnectWorkItem?.cancel()
+    reconnectWorkItem = nil
+    stopKeepAlive()
+    discardPendingTrackpadEvents()
+    isTransportConnected = false
     state = .searching
     bonjourClient.start()
+  }
+
+  /// SwiftUIのscenePhaseに合わせてネットワーク処理を開始・停止する。
+  /// 非アクティブ時は探索・接続・再接続予約をすべて解放し、復帰時だけ自動再接続する。
+  func setApplicationActive(_ isActive: Bool) {
+    guard isApplicationActive != isActive else {
+      if isActive {
+        startKeepAliveIfNeeded()
+      }
+      return
+    }
+
+    isApplicationActive = isActive
+
+    if isActive {
+      guard !isManuallyDisconnected else { return }
+      connect()
+    } else {
+      reconnectWorkItem?.cancel()
+      reconnectWorkItem = nil
+      stopKeepAlive()
+      discardPendingTrackpadEvents()
+      isTransportConnected = false
+      bonjourClient.stop()
+      state = .disconnected
+    }
+  }
+
+  /// 低電力モード中はWebSocket接続を維持しつつ、定期的なKeep-Alive送信だけを止める。
+  func setLowPowerModeEnabled(_ isEnabled: Bool) {
+    guard isLowPowerModeEnabled != isEnabled else { return }
+    isLowPowerModeEnabled = isEnabled
+
+    if isEnabled {
+      stopKeepAlive()
+    } else {
+      startKeepAliveIfNeeded()
+    }
+
+    // 次の送信から新しい上限レートを確実に適用する。
+    if trackpadFlushWorkItem != nil {
+      trackpadFlushWorkItem?.cancel()
+      trackpadFlushWorkItem = nil
+      scheduleTrackpadFlushIfNeeded()
+    }
   }
 
   func disconnect() {
     isManuallyDisconnected = true
     reconnectWorkItem?.cancel()
+    reconnectWorkItem = nil
     stopKeepAlive()
+    discardPendingTrackpadEvents()
+    isTransportConnected = false
     bonjourClient.stop()
     state = .disconnected
     hasPairedBefore = false
@@ -104,7 +180,10 @@ final class ConnectionManager {
   func unpair() {
     KeychainTokenStore.delete()
     reconnectWorkItem?.cancel()
+    reconnectWorkItem = nil
     stopKeepAlive()
+    discardPendingTrackpadEvents()
+    isTransportConnected = false
     bonjourClient.stop()
     hasPairedBefore = false
     isPairingInProgress = false
@@ -185,20 +264,86 @@ final class ConnectionManager {
   // MARK: - トラックパッド（高頻度・一方向のためAckを待たない）
 
   func sendTrackpadMove(dx: Double, dy: Double) {
-    send(TrackpadMoveMessage(dx: dx, dy: dy))
+    guard isTransportConnected, dx != 0 || dy != 0 else { return }
+    pendingTrackpadMove.dx += dx
+    pendingTrackpadMove.dy += dy
+    scheduleTrackpadFlushIfNeeded()
   }
 
   func sendTrackpadClick(button: String) {
+    guard isTransportConnected else { return }
+    // 最後の移動よりクリックが先にMacへ届かないよう、保留中の移動を先に送る。
+    flushPendingTrackpadEvents()
     send(TrackpadClickMessage(button: button))
   }
 
   func sendTrackpadScroll(dx: Double, dy: Double) {
-    send(TrackpadScrollMessage(dx: dx, dy: dy))
+    guard isTransportConnected, dx != 0 || dy != 0 else { return }
+    pendingTrackpadScroll.dx += dx
+    pendingTrackpadScroll.dy += dy
+    scheduleTrackpadFlushIfNeeded()
+  }
+
+  /// イベントごとのJSON生成を避け、1フレーム分の移動量を1メッセージへまとめる。
+  /// 待機WorkItemは常に1つだけなので、古いイベントが送信キューへ蓄積しない。
+  private func scheduleTrackpadFlushIfNeeded() {
+    guard trackpadFlushWorkItem == nil, hasPendingTrackpadEvents else { return }
+
+    let interval = isLowPowerModeEnabled
+      ? Self.lowPowerTrackpadSendInterval
+      : Self.normalTrackpadSendInterval
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.flushPendingTrackpadEvents()
+    }
+    trackpadFlushWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + interval, execute: workItem)
+  }
+
+  private var hasPendingTrackpadEvents: Bool {
+    pendingTrackpadMove.dx != 0 || pendingTrackpadMove.dy != 0
+      || pendingTrackpadScroll.dx != 0 || pendingTrackpadScroll.dy != 0
+  }
+
+  private func flushPendingTrackpadEvents() {
+    trackpadFlushWorkItem?.cancel()
+    trackpadFlushWorkItem = nil
+
+    guard isApplicationActive, isTransportConnected else {
+      discardPendingTrackpadEvents()
+      return
+    }
+
+    let move = pendingTrackpadMove
+    let scroll = pendingTrackpadScroll
+    pendingTrackpadMove = (0, 0)
+    pendingTrackpadScroll = (0, 0)
+
+    if move.dx != 0 || move.dy != 0 {
+      send(TrackpadMoveMessage(dx: move.dx, dy: move.dy))
+    }
+    if scroll.dx != 0 || scroll.dy != 0 {
+      send(TrackpadScrollMessage(dx: scroll.dx, dy: scroll.dy))
+    }
+  }
+
+  private func discardPendingTrackpadEvents() {
+    trackpadFlushWorkItem?.cancel()
+    trackpadFlushWorkItem = nil
+    pendingTrackpadMove = (0, 0)
+    pendingTrackpadScroll = (0, 0)
   }
 
   // MARK: - 接続ライフサイクル
 
   private func handleConnected() {
+    guard isApplicationActive else {
+      bonjourClient.stop()
+      return
+    }
+
+    isTransportConnected = true
+    // WebSocket確立後はBonjour探索を続ける必要がないため、接続だけを残して探索を停止する。
+    bonjourClient.stopBrowsing()
     reconnectAttempt = 0
     isPairingReconnecting = false
     if let savedToken = KeychainTokenStore.load() {
@@ -215,11 +360,17 @@ final class ConnectionManager {
         }
       }
     }
-    startKeepAlive()
+    startKeepAliveIfNeeded()
   }
 
   private func handleDisconnected() {
+    isTransportConnected = false
     stopKeepAlive()
+    discardPendingTrackpadEvents()
+    guard isApplicationActive else {
+      state = .disconnected
+      return
+    }
     if isPairingInProgress {
       isPairingReconnecting = true
       state = .waitingForPairing
@@ -230,7 +381,13 @@ final class ConnectionManager {
   }
 
   private func handleFailure(_ message: String) {
+    isTransportConnected = false
     stopKeepAlive()
+    discardPendingTrackpadEvents()
+    guard isApplicationActive else {
+      state = .disconnected
+      return
+    }
     if isPairingInProgress {
       isPairingReconnecting = true
     }
@@ -240,24 +397,31 @@ final class ConnectionManager {
 
   /// 切断時に指数バックオフで自動再接続する（ユーザーが明示的に切断した場合は行わない）
   private func scheduleReconnectIfNeeded() {
-    guard !isManuallyDisconnected else { return }
+    guard isApplicationActive, !isManuallyDisconnected else { return }
     reconnectWorkItem?.cancel()
 
     let delay = min(pow(2.0, Double(reconnectAttempt)), Self.maxReconnectDelay)
     reconnectAttempt += 1
 
     let workItem = DispatchWorkItem { [weak self] in
-      self?.connect()
+      guard let self, self.isApplicationActive, !self.isManuallyDisconnected else { return }
+      self.connect()
     }
     reconnectWorkItem = workItem
     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
   }
 
-  private func startKeepAlive() {
-    stopKeepAlive()
-    keepAliveTimer = Timer.scheduledTimer(withTimeInterval: Self.keepAliveInterval, repeats: true) { [weak self] _ in
+  private func startKeepAliveIfNeeded() {
+    guard isApplicationActive,
+          !isLowPowerModeEnabled,
+          isTransportConnected,
+          keepAliveTimer == nil else { return }
+
+    let timer = Timer.scheduledTimer(withTimeInterval: Self.keepAliveInterval, repeats: true) { [weak self] _ in
       self?.bonjourClient.sendPing()
     }
+    timer.tolerance = Self.keepAliveTolerance
+    keepAliveTimer = timer
   }
 
   private func stopKeepAlive() {
