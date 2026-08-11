@@ -406,7 +406,7 @@ struct ButtonEditView: View {
     }
     // 選択直後にそのアクション専用の入力画面へ進む（選択画面に埋もれてURL入力欄などが
     // 見落とされないようにするため）
-    withAnimation(.easeOut(duration: 0.18)) {
+    withAnimation(themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.18)) {
       editStep = .parameters
     }
   }

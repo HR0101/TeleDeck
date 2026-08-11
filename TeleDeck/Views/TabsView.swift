@@ -459,11 +459,17 @@ struct TabsView: View {
 }
 
 private struct TabsTileButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .scaleEffect(configuration.isPressed ? 0.94 : 1)
       .opacity(configuration.isPressed ? 0.82 : 1)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.12),
+        value: configuration.isPressed
+      )
   }
 }
 

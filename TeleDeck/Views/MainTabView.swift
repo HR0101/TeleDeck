@@ -13,6 +13,7 @@ struct MainTabView: View {
   let connectionManager: ConnectionManager
 
   @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isShowingSettings = false
   @State private var selectedTab: MainTab = .panel
   @State private var isPanelEditMode = false
@@ -26,6 +27,10 @@ struct MainTabView: View {
 
   /// スワイプ不可のヒントを自動的に閉じるまでの時間
   private static let swipeHintDuration: TimeInterval = 2.2
+
+  private var shouldReduceMotion: Bool {
+    reduceMotion || themeStore.isEnergySavingModeEnabled
+  }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -133,7 +138,7 @@ struct MainTabView: View {
     guard let index = order.firstIndex(of: selectedTab) else { return }
     let nextIndex = horizontal < 0 ? index + 1 : index - 1
     guard order.indices.contains(nextIndex) else { return }
-    withAnimation(.easeOut(duration: 0.2)) {
+    withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.2)) {
       selectedTab = order[nextIndex]
     }
   }
@@ -156,12 +161,12 @@ struct MainTabView: View {
   private func showSwipeDisabledHint() {
     swipeHintDismissWorkItem?.cancel()
 
-    withAnimation(.easeOut(duration: 0.2)) {
+    withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.2)) {
       isShowingSwipeDisabledHint = true
     }
 
     let workItem = DispatchWorkItem {
-      withAnimation(.easeIn(duration: 0.2)) {
+      withAnimation(shouldReduceMotion ? nil : .easeIn(duration: 0.2)) {
         isShowingSwipeDisabledHint = false
       }
     }
@@ -200,7 +205,7 @@ struct MainTabView: View {
     let isSelected = selectedTab == tab
 
     return Button {
-      withAnimation(.easeOut(duration: 0.18)) {
+      withAnimation(shouldReduceMotion ? nil : .easeOut(duration: 0.18)) {
         selectedTab = tab
       }
     } label: {
@@ -234,11 +239,17 @@ struct MainTabView: View {
 }
 
 private struct FloatingSettingsButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
       .scaleEffect(configuration.isPressed ? 0.96 : 1)
       .opacity(configuration.isPressed ? 0.82 : 1)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.12),
+        value: configuration.isPressed
+      )
   }
 }
 

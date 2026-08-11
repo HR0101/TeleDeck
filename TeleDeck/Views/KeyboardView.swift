@@ -372,6 +372,9 @@ struct KeyboardView: View {
 /// ゲーミングキーボード風のキー用ButtonStyle。
 /// 通常キーはGamingPalette.mutedの背景と薄いボーダー、修飾キーがONの時はアクセントカラーで強く光らせる
 private struct GamingKeyButtonStyle: ButtonStyle {
+  @Environment(ThemeStore.self) private var themeStore
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var accentColor: Color
   var isActive: Bool
 
@@ -392,9 +395,15 @@ private struct GamingKeyButtonStyle: ButtonStyle {
             lineWidth: isActive ? 1.5 : 1
           )
       )
-      .shadow(color: accentColor.opacity(isActive ? 0.6 : 0), radius: isActive ? 10 : 0)
+      .shadow(
+        color: themeStore.isEnergySavingModeEnabled ? .clear : accentColor.opacity(isActive ? 0.6 : 0),
+        radius: themeStore.isEnergySavingModeEnabled ? 0 : (isActive ? 10 : 0)
+      )
       .scaleEffect(configuration.isPressed ? 0.95 : 1)
-      .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+      .animation(
+        reduceMotion || themeStore.isEnergySavingModeEnabled ? nil : .easeOut(duration: 0.12),
+        value: configuration.isPressed
+      )
   }
 }
 
