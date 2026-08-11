@@ -36,11 +36,15 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
 
   /// 同じQRを検出し続けても連続で通知しないよう、1度通知したらこの秒数だけ次の検出を抑止する
   private static let rescanSuppressInterval: TimeInterval = 1.5
+  private static let scanAreaSideLength: CGFloat = 220
 
   private let session = AVCaptureSession()
   private var previewLayer: AVCaptureVideoPreviewLayer?
+  private var metadataOutput: AVCaptureMetadataOutput?
   /// セッションの開始/停止はメインスレッドを塞がないよう専用キューで行う
   private let sessionQueue = DispatchQueue(label: "TeleDeck.QRScannerController.session")
+  /// QR解析をUI更新から分離し、検出中のメインスレッド負荷を抑える
+  private let metadataQueue = DispatchQueue(label: "TeleDeck.QRScannerController.metadata", qos: .userInitiated)
   /// 直近に検出済みで、次の検出を一時的に無視している状態か
   private var isSuppressingDetection = false
 
@@ -53,6 +57,7 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
   override func viewDidLayoutSubviews() {
     super.viewDidLayoutSubviews()
     previewLayer?.frame = view.bounds
+    updateRectOfInterest()
   }
 
   override func viewWillAppear(_ animated: Bool) {
@@ -66,6 +71,13 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
   }
 
   private func configureSession() {
+    session.beginConfiguration()
+    defer { session.commitConfiguration() }
+
+    if session.canSetSessionPreset(.medium) {
+      session.sessionPreset = .medium
+    }
+
     guard let device = AVCaptureDevice.default(for: .video),
           let input = try? AVCaptureDeviceInput(device: device),
           session.canAddInput(input) else {
@@ -80,15 +92,27 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
       return
     }
     session.addOutput(metadataOutput)
-    metadataOutput.setMetadataObjectsDelegate(self, queue: .main)
+    metadataOutput.setMetadataObjectsDelegate(self, queue: metadataQueue)
     metadataOutput.metadataObjectTypes = [.qr]
+    self.metadataOutput = metadataOutput
 
     let layer = AVCaptureVideoPreviewLayer(session: session)
     layer.videoGravity = .resizeAspectFill
     view.layer.addSublayer(layer)
     previewLayer = layer
+  }
 
-    startSession()
+  /// 画面中央の読み取り枠だけをQR解析対象にし、フレーム全体を走査し続けないようにする。
+  private func updateRectOfInterest() {
+    guard let previewLayer, let metadataOutput, !view.bounds.isEmpty else { return }
+    let sideLength = min(Self.scanAreaSideLength, min(view.bounds.width, view.bounds.height) * 0.7)
+    let scanRect = CGRect(
+      x: view.bounds.midX - sideLength / 2,
+      y: view.bounds.midY - sideLength / 2,
+      width: sideLength,
+      height: sideLength
+    )
+    metadataOutput.rectOfInterest = previewLayer.metadataOutputRectConverted(fromLayerRect: scanRect)
   }
 
   private func startSession() {
@@ -116,14 +140,32 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
       return
     }
 
-    // 有効なQRならシートが閉じられて破棄されるが、無効なQRの場合に再読み取りできるよう、
-    // 恒久的にロックせず一定時間だけ検出を抑止する
-    isSuppressingDetection = true
-    DispatchQueue.main.asyncAfter(deadline: .now() + Self.rescanSuppressInterval) { [weak self] in
-      self?.isSuppressingDetection = false
+    if isValidTeleDeckQR(stringValue) {
+      // 有効なQRを得た時点でカメラを即停止し、シートが閉じるまでの余分なフレーム処理を防ぐ。
+      isSuppressingDetection = true
+      stopSession()
+      DispatchQueue.main.async { [weak self] in
+        self?.onScan?(stringValue)
+      }
+      return
     }
 
-    onScan?(stringValue)
+    // 無効なQRはメッセージ表示後に再読み取りできるよう、専用キュー上で一定時間だけ抑止する。
+    isSuppressingDetection = true
+    metadataQueue.asyncAfter(deadline: .now() + Self.rescanSuppressInterval) { [weak self] in
+      self?.isSuppressingDetection = false
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.onScan?(stringValue)
+    }
+  }
+
+  private func isValidTeleDeckQR(_ string: String) -> Bool {
+    guard let data = string.data(using: .utf8),
+          let payload = try? JSONDecoder().decode(PairingQRPayload.self, from: data) else {
+      return false
+    }
+    return payload.isValid
   }
 }
 
