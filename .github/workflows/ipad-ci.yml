@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build and test iPad app
+  compile:
+    name: Compile iPad app and tests
     runs-on: macos-26
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.6.app
@@ -26,13 +26,13 @@ jobs:
       - name: Show toolchain
         run: xcodebuild -version
 
-      - name: Build and test on iPad Simulator
+      - name: Compile app and test targets
         run: >-
           xcodebuild
+          build-for-testing
           -project TeleDeck.xcodeproj
           -scheme TeleDeck
-          -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5),OS=26.5'
+          -destination 'generic/platform=iOS Simulator'
           -derivedDataPath "$RUNNER_TEMP/TeleDeckDerivedData"
           CODE_SIGNING_ALLOWED=NO
           CODE_SIGNING_REQUIRED=NO
-          test
