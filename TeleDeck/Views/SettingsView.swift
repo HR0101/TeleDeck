@@ -25,6 +25,7 @@ struct SettingsView: View {
       Form {
         connectionSection
         displaySection
+        powerSavingSection
         appearanceSection
         backgroundSection
         accentColorSection
@@ -47,6 +48,47 @@ struct SettingsView: View {
         }
       }
     }
+  }
+
+  // MARK: - 省電力
+
+  private var powerSavingSection: some View {
+    Section {
+      Toggle(isOn: $themeStore.followsSystemLowPowerMode) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("iPadの低電力モードと連動")
+            .foregroundStyle(GamingPalette.foreground)
+          Text("時計・背景・パネル描画と通信を自動的に省電力構成へ切り替えます")
+            .font(.caption)
+            .foregroundStyle(GamingPalette.mutedForeground)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+      .tint(themeStore.accentColor)
+
+      LabeledContent("現在の表示") {
+        Text(powerSavingStatusText)
+          .foregroundStyle(themeStore.isEnergySavingModeEnabled ? GamingPalette.success : GamingPalette.mutedForeground)
+      }
+      .foregroundStyle(GamingPalette.foreground)
+    } header: {
+      Text("省電力")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    } footer: {
+      Text("省電力表示中は時計を分単位の単色デジタル表示にし、動くグロー、透明マテリアル、パネルの影、画面の常時点灯を停止します")
+        .foregroundStyle(GamingPalette.mutedForeground)
+    }
+    .listRowBackground(GamingPalette.card.opacity(0.55))
+  }
+
+  private var powerSavingStatusText: String {
+    if themeStore.isEnergySavingModeEnabled {
+      return "省電力表示中"
+    }
+    if themeStore.isSystemLowPowerModeEnabled {
+      return "連動オフ"
+    }
+    return "通常表示"
   }
 
   // MARK: - 接続
@@ -178,6 +220,11 @@ struct SettingsView: View {
     } header: {
       Text("背景")
         .foregroundStyle(GamingPalette.mutedForeground)
+    } footer: {
+      if themeStore.isEnergySavingModeEnabled {
+        Text("現在は省電力表示のため一時的に停止しています")
+          .foregroundStyle(GamingPalette.mutedForeground)
+      }
     }
     .listRowBackground(GamingPalette.card.opacity(0.55))
   }
