@@ -6,6 +6,7 @@
 //  UserDefaultsへ即座に永続化するストア。
 //
 
+import Foundation
 import Observation
 import SwiftUI
 
@@ -66,6 +67,7 @@ final class ThemeStore {
     static let appIconGridColumns = "themeStore.appIconGridColumns"
     static let tabOrder = "themeStore.tabOrder"
     static let keepsScreenAwake = "themeStore.keepsScreenAwake"
+    static let followsSystemLowPowerMode = "themeStore.followsSystemLowPowerMode"
   }
 
   /// 「アプリ」タブのアイコングリッドの列数として選べる範囲。列数を減らすほどアイコンが大きく表示される
@@ -94,15 +96,28 @@ final class ThemeStore {
   }
 
   /// 卓上のデッキとして使う間に画面が消灯しないようにする。
-  /// 常時表示が本来の使い方のため既定値はON（電池を優先する場合は設定でOFFにできる）
+  /// 電池消費を抑えるため既定値はOFF。卓上で常時表示したい場合だけ設定から有効にする。
   var keepsScreenAwake: Bool {
     didSet { persistKeepsScreenAwake() }
   }
 
+  /// iPadの低電力モードに合わせて、描画と通信を省電力構成へ切り替える。
+  /// ユーザーが意識せず使ってもOSの意図を尊重できるよう、既定値はON。
+  var followsSystemLowPowerMode: Bool {
+    didSet { persistFollowsSystemLowPowerMode() }
+  }
+
+  /// ProcessInfoの通知から更新される、現在のiPad側の低電力モード状態。
+  private(set) var isSystemLowPowerModeEnabled: Bool
+
   private let userDefaults: UserDefaults
 
-  init(userDefaults: UserDefaults = .standard) {
+  init(
+    userDefaults: UserDefaults = .standard,
+    isSystemLowPowerModeEnabled: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+  ) {
     self.userDefaults = userDefaults
+    self.isSystemLowPowerModeEnabled = isSystemLowPowerModeEnabled
 
     if let storedColorSchemeRawValue = userDefaults.string(forKey: StorageKey.colorScheme),
       let storedColorScheme = AppColorScheme(rawValue: storedColorSchemeRawValue) {
@@ -127,10 +142,14 @@ final class ThemeStore {
     let storedColumns = userDefaults.integer(forKey: StorageKey.appIconGridColumns)
     appIconGridColumns = storedColumns == 0 ? 4 : storedColumns
 
-    // 常時表示がTeleDeckの本来の使い方のため、未保存時はONにする
+    // 初回起動時はiPadの自動ロックを尊重し、意図せず画面を点灯し続けないようOFFにする
     keepsScreenAwake = userDefaults.object(forKey: StorageKey.keepsScreenAwake) == nil
-      ? true
+      ? false
       : userDefaults.bool(forKey: StorageKey.keepsScreenAwake)
+
+    followsSystemLowPowerMode = userDefaults.object(forKey: StorageKey.followsSystemLowPowerMode) == nil
+      ? true
+      : userDefaults.bool(forKey: StorageKey.followsSystemLowPowerMode)
 
     if let storedTabOrderRawValues = userDefaults.array(forKey: StorageKey.tabOrder) as? [String] {
       let storedTabs = storedTabOrderRawValues.compactMap { MainTab(rawValue: $0) }
@@ -158,6 +177,20 @@ final class ThemeStore {
     accentColorOption.color
   }
 
+  /// アプリ側で省電力構成を適用すべきかどうか。
+  var isEnergySavingModeEnabled: Bool {
+    followsSystemLowPowerMode && isSystemLowPowerModeEnabled
+  }
+
+  /// ユーザーがグローを有効にしていても、省電力中は大きなぼかし描画を強制停止する。
+  var shouldShowBackgroundGlow: Bool {
+    backgroundGlowEnabled && !isEnergySavingModeEnabled
+  }
+
+  func setSystemLowPowerModeEnabled(_ isEnabled: Bool) {
+    isSystemLowPowerModeEnabled = isEnabled
+  }
+
   // MARK: - 永続化
 
   private func persistColorScheme() {
@@ -182,5 +215,9 @@ final class ThemeStore {
 
   private func persistKeepsScreenAwake() {
     userDefaults.set(keepsScreenAwake, forKey: StorageKey.keepsScreenAwake)
+  }
+
+  private func persistFollowsSystemLowPowerMode() {
+    userDefaults.set(followsSystemLowPowerMode, forKey: StorageKey.followsSystemLowPowerMode)
   }
 }
